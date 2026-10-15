@@ -1,0 +1,44 @@
+Model Studio 部署说明
+
+当前状态与选择
+本目录提供可审查的源码、单机 Docker Compose 配置和本地启动配置；未在公网发布，未使用真实 API key 验证付费模型调用。
+Awesome Deploy 0.4.1 当前创建的内部网络阻断外部模型 API。awesome.blocked.yaml 只是阻塞说明，不能当作可部署清单使用。需要独立且允许出站 HTTPS 的主机，或另行设计并授权 Awesome 的受控出站能力。此交付未修改 Awesome 的网络策略。
+
+本机 Node.js 运行
+使用 Node.js 24。运行 npm run setup，再运行 npm start。npm start 从项目根目录的 .env 读取配置。默认只监听本机 127.0.0.1:8080，浏览器地址必须与 PUBLIC_ORIGIN 完全一致。
+项目仅使用 Node 内置模块与 SQLite，不需要安装运行依赖。npm test 运行仓库自带测试；测试不进行真实付费调用。
+
+独立 Docker Compose
+前提：可使用 Docker Compose 的主机具有出站 DNS 与 HTTPS；基础镜像已在本地缓存。Dockerfile 固定使用：
+node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
+Dockerfile 不下载依赖。Compose 的构建阶段禁用网络；镜像未缓存时须由运维预先获取该固定镜像。
+1. 在项目根目录运行 npm run setup 生成 .env；在生产环境启动前，将 PUBLIC_ORIGIN 改为最终 HTTPS origin，例如 https://chat.example.com，末尾不加路径。
+2. 运行 docker compose build --pull=false。
+3. 运行 docker compose up -d。
+4. 从宿主机请求 http://127.0.0.1:8080/healthz，确认数据库健康；该检查不能证明供应商凭据或出站访问正常。
+5. 完成 HTTPS 反向代理配置后，通过 PUBLIC_ORIGIN 对应的浏览器地址登录、配置供应商并测试一条对话。供应商可能收费。
+6. 首次成功登录后删除 .env 中的 BOOTSTRAP_PASSWORD，执行 docker compose up -d --force-recreate，让进程环境也移除该初始化值。
+
+容器以 65532:65532 运行，只读根文件系统；持久数据在 model-studio-data 命名卷的 /data；/tmp 使用受限 tmpfs；移除全部 capabilities，启用 no-new-privileges，限制 512 MiB 内存、1 CPU、128 个进程。Compose 将 HOST、PORT、DATA_DIR 固定为容器内地址；宿主机仅绑定 127.0.0.1:8080。首次挂载新命名卷时，Docker 从镜像内 /data 复制目录权限。如果复用自建数据目录，运维须确保它可由 UID/GID 65532 写入。
+
+生产 HTTPS
+需要宿主机反向代理提供有效 TLS 证书，并转发至 127.0.0.1:8080。将原始浏览器 Origin 原样传递；不要重写成内网地址。PUBLIC_ORIGIN 必须是用户访问的精确 HTTPS origin（含非标准端口时也要包含端口）。HTTP 只允许 localhost、127.0.0.1、::1 开发访问。不要直接将容器端口绑定到所有网卡来替代 HTTPS。
+若代理也在容器中，不能直接用其 127.0.0.1 指向本服务；需由运维按网络环境配置专用网络和转发。当前 Compose 默认方案是宿主机反向代理。
+
+配置说明
+MASTER_KEY：64 位十六进制字符，代表 32 字节随机密钥。MASTER_KEY_FILE 可替代内联值；文件选项优先。丢失密钥会使已保存 API key 无法解密，不能靠重新运行 setup 修复。
+BOOTSTRAP_USERNAME：默认 admin，仅用于空数据库首次创建管理员。
+BOOTSTRAP_PASSWORD：14–128 字符，仅用于空数据库初始化；BOOTSTRAP_PASSWORD_FILE 可替代，文件值会去除首尾空白。移除初始化密码后，已有账号使用数据库中的密码哈希登录。
+PUBLIC_ORIGIN：默认 http://localhost:8080；生产必须使用精确 HTTPS origin，不含路径、查询、凭据或片段。
+DATA_DIR：Node 默认 ./data；Compose 强制 /data。
+DEFAULT_DAILY_LIMIT：默认 50，范围 1–10000，用于默认账号额度。
+GLOBAL_DAILY_LIMIT：默认 500，范围 1–100000，限制全站每日已接受的对话请求次数。
+ALLOWED_API_HOSTS：逗号分隔的额外精确 DNS 主机名，例如 api.example.com。默认官方 API 主机已经允许，不必重复。不能填 URL、端口、IP、通配符或私网主机。
+HOST、PORT：本机 setup 默认 127.0.0.1、8080；Compose 覆盖为 0.0.0.0、8080。
+_FILE 路径必须在服务进程内部可读。Compose 当前仅加载 .env，不自动挂载外部密钥文件；使用 _FILE 时需由运维添加只读挂载并检查 65532 用户读权限。不要把宿主机路径误当作容器内路径。
+
+数据、备份与升级
+保存数据库目录和对应 MASTER_KEY；二者缺一不能完整恢复。将备份存储在限制访问的位置。SQLite 可能存在 WAL/SHM 文件：使用 SQLite 支持的在线备份，或停止服务后备份整个数据目录，避免只复制正在写入的主数据库。
+Docker 场景先 docker compose stop，再由运维将命名卷完整备份；备份完成后 docker compose start。docker compose down 保留命名卷；docker compose down -v 会删除数据，不要用于普通升级。
+升级前备份数据及当前配置，重新构建固定版本镜像，再 docker compose up -d。不要更换 MASTER_KEY，也不要把新数据卷当作旧数据卷。如果修改了 PUBLIC_ORIGIN、允许主机或密钥配置，应重建容器使环境生效。
+账号日额度按 Asia/Shanghai 重置。已经接受并扣额的调用即使上游报错也计入当日额度；限额是请求次数，无法保证费用上限。默认是单进程单实例 SQLite 部署，不建议多实例共享数据库卷。

@@ -1,0 +1,10 @@
+# BLOCKED — documentation only; this is NOT an Awesome Deploy deployment manifest.
+# Awesome Deploy 0.4.1 currently creates internal-only networks. Such a network
+# prevents this service from reaching external OpenAI, Anthropic and Gemini APIs.
+# Publishing this file as a ready deployment would leave chat non-functional.
+# Use compose.yaml on an approved host with outbound HTTPS connectivity, or first
+# separately design and authorize controlled egress for Awesome Deploy.
+# Do not weaken the existing platform's network policy implicitly.
+# No platform changes or live deployment have been performed by this artifact.
+status: blocked
+reason: external_model_api_egress_unavailable

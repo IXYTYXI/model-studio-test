@@ -1,0 +1,199 @@
+import {createServer} from 'node:http';
+import {readFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import {resolve,extname,sep} from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {openStore} from './store.js';
+import {AppError,requireValue} from './errors.js';
+import {hashPassword,verifyPassword,randomToken,tokenHash,equalToken,encryptSecret,decryptSecret,RateLimiter} from './security.js';
+import {json,readJson,headers,cookie,sessionToken} from './http.js';
+import {PROVIDER_DEFAULTS,validateProviderConfig,callProvider} from './providers.js';
+
+const publicDir=fileURLToPath(new URL('../public/',import.meta.url));
+const day=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+const iso=()=>new Date().toISOString();
+const userView=u=>({id:u.id,username:u.username,role:u.role,enabled:!!u.enabled,dailyLimit:u.daily_limit});
+const conversationView=c=>({id:c.id,provider:c.provider,title:c.title,createdAt:c.created_at,updatedAt:c.updated_at});
+const messageView=m=>({id:m.id,role:m.role,content:m.content,createdAt:m.created_at});
+const providerView=p=>({id:p.id,label:p.label,baseUrl:p.base_url,model:p.model,protocol:p.protocol,enabled:!!p.enabled,hasKey:!!p.secret,maxOutputTokens:p.max_output});
+const username=value=>{requireValue(typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_.@-]{1,63}$/.test(value),'用户名须为 2–64 位字母、数字或 . _ @ -');return value.toLowerCase();};
+const dailyLimit=value=>{requireValue(Number.isInteger(value)&&value>=1&&value<=10000,'每日调用上限须为 1–10000 的整数');return value;};
+
+export async function createApp(config,{providerCaller=callProvider}={}) {
+  const db=await openStore(config,PROVIDER_DEFAULTS),secure=config.publicOrigin.startsWith('https:');
+  const loginByIp=new RateLimiter({limit:15,windowMs:600000});
+  const loginByUser=new RateLimiter({limit:8,windowMs:600000});
+  const chatRate=new RateLimiter({limit:8,windowMs:60000});
+  const busyUsers=new Set(),controllers=new Set();let passwordWork=0;
+  const fakeHash=await hashPassword(randomToken());
+  const usage=u=>({used:db.prepare('SELECT used FROM usage WHERE user_id=? AND day=?').get(u.id,day())?.used||0,limit:u.daily_limit,day:day()});
+  const summaries=()=>db.prepare('SELECT * FROM providers ORDER BY rowid').all().map(p=>({id:p.id,label:p.label,model:p.model,enabled:!!p.enabled,configured:!!(p.secret&&p.model&&p.enabled)}));
+  const sessionView=(u,csrf)=>({user:userView(u),csrfToken:csrf,providers:summaries(),usage:usage(u),version:'1.0.0'});
+  function authenticated(req) {
+    const token=sessionToken(req);
+    const row=token&&db.prepare('SELECT users.*,sessions.csrf,sessions.token FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token=? AND sessions.expires>? AND users.enabled=1').get(tokenHash(token),Date.now());
+    if(!row)throw new AppError(401,'LOGIN_REQUIRED','请先登录');return row;
+  }
+  function owned(id,u) {
+    const c=db.prepare('SELECT * FROM conversations WHERE id=? AND user_id=?').get(id,u.id);
+    if(!c)throw new AppError(404,'NOT_FOUND','会话不存在');return c;
+  }
+  function thread(c) {return {conversation:conversationView(c),messages:db.prepare('SELECT * FROM messages WHERE conversation_id=? ORDER BY id').all(c.id).map(messageView)};}
+  async function passwordTask(fn) {
+    if(passwordWork>=4)throw new AppError(429,'BUSY','登录请求较多，请稍后再试');
+    passwordWork++;try{return await fn();}finally{passwordWork--;}
+  }
+  function transaction(fn) {db.exec('BEGIN IMMEDIATE');try{const value=fn();db.exec('COMMIT');return value;}catch(e){db.exec('ROLLBACK');throw e;}}
+
+  async function route(req,res) {
+    headers(res,secure);
+    const url=new URL(req.url,'http://localhost'),path=url.pathname,method=req.method;
+    const mutation=!['GET','HEAD','OPTIONS'].includes(method);
+    if(mutation&&req.headers.origin!==config.publicOrigin)throw new AppError(403,'ORIGIN_DENIED','请求来源不允许');
+    if(method==='GET'&&path==='/healthz'){db.prepare('SELECT count(*) FROM settings').get();return json(res,200,{status:'ok'});}
+    if(path==='/api/login'&&method==='POST') {
+      const body=await readJson(req),name=typeof body.username==='string'?body.username.toLowerCase():'';
+      const ip=req.socket.remoteAddress||'unknown'; // Forwarded headers are untrusted.
+      if(!loginByIp.take(ip)||!loginByUser.take(name.slice(0,64)))throw new AppError(429,'LOGIN_LIMIT','登录尝试过多，请 10 分钟后再试');
+      const u=db.prepare('SELECT * FROM users WHERE username=?').get(name);
+      const valid=await passwordTask(()=>verifyPassword(body.password,u?.password||fakeHash));
+      const latest=u&&db.prepare('SELECT * FROM users WHERE id=?').get(u.id);
+      if(!valid||!latest?.enabled||latest.password!==u.password)throw new AppError(401,'INVALID_CREDENTIALS','用户名或密码不正确');
+      const token=randomToken(),csrf=randomToken(),expires=Date.now()+43200000;
+      db.prepare('DELETE FROM sessions WHERE expires<=?').run(Date.now());
+      db.prepare('DELETE FROM sessions WHERE user_id=? AND token NOT IN (SELECT token FROM sessions WHERE user_id=? ORDER BY expires DESC LIMIT 4)').run(u.id,u.id);
+      db.prepare('INSERT INTO sessions(token,user_id,csrf,expires) VALUES(?,?,?,?)').run(tokenHash(token),u.id,csrf,expires);
+      cookie(res,token,secure);return json(res,200,sessionView(latest,csrf));
+    }
+    if(path.startsWith('/api/')) {
+      let u;
+      function refreshAuth() {
+        u=authenticated(req);
+        if(mutation&&!equalToken(req.headers['x-csrf-token'],u.csrf))throw new AppError(403,'CSRF_DENIED','请求验证失败，请刷新页面');
+        if(path.startsWith('/api/admin/')&&u.role!=='admin')throw new AppError(403,'ADMIN_REQUIRED','仅管理员可以进行此操作');
+      }
+      refreshAuth();
+      async function bodyAfterAuth() {const body=await readJson(req);refreshAuth();return body;}
+      if(path==='/api/session'&&method==='GET')return json(res,200,sessionView(u,u.csrf));
+      if(path==='/api/providers'&&method==='GET')return json(res,200,{providers:summaries()});
+      if(path==='/api/logout'&&method==='POST'){db.prepare('DELETE FROM sessions WHERE token=?').run(u.token);cookie(res,'',secure,0);return json(res,200,{ok:true});}
+      if(path==='/api/password'&&method==='POST') {
+        const b=await bodyAfterAuth(),oldHash=u.password;
+        const hashed=await passwordTask(async()=>{if(!await verifyPassword(b.currentPassword,oldHash))throw new AppError(400,'PASSWORD_MISMATCH','当前密码不正确');return hashPassword(b.newPassword);});
+        refreshAuth();
+        if(u.password!==oldHash)throw new AppError(401,'LOGIN_REQUIRED','密码已更新，请重新登录');
+        transaction(()=>{db.prepare('UPDATE users SET password=? WHERE id=?').run(hashed,u.id);db.prepare('DELETE FROM sessions WHERE user_id=?').run(u.id);});
+        cookie(res,'',secure,0);return json(res,200,{ok:true});
+      }
+      if(path==='/api/admin/providers'&&method==='GET')return json(res,200,{providers:db.prepare('SELECT * FROM providers ORDER BY rowid').all().map(providerView)});
+      const providerMatch=path.match(/^\/api\/admin\/providers\/(openai|anthropic|gemini)$/);
+      if(providerMatch&&method==='PUT') {
+        const b=await bodyAfterAuth(),id=providerMatch[1],p=validateProviderConfig(id,b,config.allowedHosts);
+        const old=db.prepare('SELECT * FROM providers WHERE id=?').get(id);
+        requireValue(b.apiKey===undefined||typeof b.apiKey==='string','API Key 格式不正确');
+        requireValue(!b.apiKey||(b.apiKey.length<=8192&&!/[\r\n\x00-\x20\x7f]/.test(b.apiKey)),'API Key 不能包含空白且长度须小于 8192');
+        const sealed=b.apiKey?encryptSecret(b.apiKey,config.masterKey,id):old.secret;
+        requireValue(!p.enabled||!!sealed,'启用模型前请先配置 API Key');
+        db.prepare('UPDATE providers SET base_url=?,model=?,protocol=?,secret=?,enabled=?,max_output=? WHERE id=?')
+          .run(p.baseUrl,p.model,p.protocol,sealed,p.enabled?1:0,p.maxOutputTokens,id);
+        return json(res,200,{provider:providerView(db.prepare('SELECT * FROM providers WHERE id=?').get(id))});
+      }
+      if(path==='/api/admin/users'&&method==='GET')return json(res,200,{users:db.prepare('SELECT * FROM users ORDER BY created_at').all().map(row=>({...userView(row),used:usage(row).used}))});
+      if(path==='/api/admin/users'&&method==='POST') {
+        const b=await bodyAfterAuth(),name=username(b.username),limit=dailyLimit(b.dailyLimit??config.defaultDailyLimit);
+        requireValue(db.prepare('SELECT count(*) AS n FROM users').get().n<100,'最多支持 100 个账号');
+        if(db.prepare('SELECT id FROM users WHERE username=?').get(name))throw new AppError(409,'USERNAME_EXISTS','用户名已存在');
+        const hashed=await passwordTask(()=>hashPassword(b.password));
+        refreshAuth();
+        requireValue(db.prepare('SELECT count(*) AS n FROM users').get().n<100,'最多支持 100 个账号');
+        if(db.prepare('SELECT id FROM users WHERE username=?').get(name))throw new AppError(409,'USERNAME_EXISTS','用户名已存在');
+        const id=randomUUID();db.prepare('INSERT INTO users(id,username,password,role,daily_limit,created_at) VALUES(?,?,?,?,?,?)').run(id,name,hashed,'member',limit,iso());
+        return json(res,201,{user:userView(db.prepare('SELECT * FROM users WHERE id=?').get(id))});
+      }
+      const userMatch=path.match(/^\/api\/admin\/users\/([a-f0-9-]{36})$/);
+      if(userMatch&&method==='PATCH') {
+        const b=await bodyAfterAuth();let target=db.prepare('SELECT * FROM users WHERE id=?').get(userMatch[1]);
+        if(!target)throw new AppError(404,'NOT_FOUND','账号不存在');
+        requireValue(b.enabled===undefined||typeof b.enabled==='boolean','账号状态必须是布尔值');
+        requireValue(target.id!==u.id||b.enabled!==false,'不能停用当前管理员');
+        const hashed=b.password?await passwordTask(()=>hashPassword(b.password)):target.password;
+        refreshAuth();
+        target=db.prepare('SELECT * FROM users WHERE id=?').get(userMatch[1]);
+        const limit=b.dailyLimit===undefined?target.daily_limit:dailyLimit(b.dailyLimit);
+        transaction(()=>{db.prepare('UPDATE users SET enabled=?,daily_limit=?,password=? WHERE id=?').run(b.enabled===undefined?target.enabled:(b.enabled?1:0),limit,hashed,target.id);
+          if(b.enabled===false||b.password)db.prepare('DELETE FROM sessions WHERE user_id=?').run(target.id);});
+        return json(res,200,{user:userView(db.prepare('SELECT * FROM users WHERE id=?').get(target.id))});
+      }
+      if(path==='/api/conversations'&&method==='GET') {
+        const provider=url.searchParams.get('provider');
+        const rows=provider?db.prepare('SELECT * FROM conversations WHERE user_id=? AND provider=? ORDER BY updated_at DESC').all(u.id,provider):db.prepare('SELECT * FROM conversations WHERE user_id=? ORDER BY updated_at DESC').all(u.id);
+        return json(res,200,{conversations:rows.map(conversationView)});
+      }
+      if(path==='/api/conversations'&&method==='POST') {
+        const b=await bodyAfterAuth();requireValue(PROVIDER_DEFAULTS.some(p=>p.id===b.provider),'请选择有效的模型服务');
+        requireValue(db.prepare('SELECT count(*) AS n FROM conversations WHERE user_id=?').get(u.id).n<500,'会话数量已达上限，请删除不需要的会话');
+        const id=randomUUID(),now=iso();db.prepare('INSERT INTO conversations(id,user_id,provider,title,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(id,u.id,b.provider,'新对话',now,now);
+        return json(res,201,{conversation:conversationView(owned(id,u))});
+      }
+      const cMatch=path.match(/^\/api\/conversations\/([a-f0-9-]{36})$/);
+      if(cMatch&&['GET','DELETE'].includes(method)) {
+        const c=owned(cMatch[1],u);
+        if(method==='GET')return json(res,200,thread(c));
+        if(busyUsers.has(u.id))throw new AppError(409,'CHAT_BUSY','请等当前回复完成再删除会话');
+        db.prepare('DELETE FROM conversations WHERE id=? AND user_id=?').run(c.id,u.id);return json(res,200,{ok:true});
+      }
+      if(path==='/api/chat'&&method==='POST') {
+        const b=await bodyAfterAuth();requireValue(typeof b.conversationId==='string','请选择会话');
+        const c=owned(b.conversationId,u);
+        requireValue(typeof b.message==='string'&&b.message.trim().length>0&&b.message.length<=16000,'消息须为 1–16000 个字符');
+        if(busyUsers.has(u.id)||busyUsers.size>=4)throw new AppError(429,'CHAT_BUSY','当前请求较多，请稍后再试');
+        const p=db.prepare('SELECT * FROM providers WHERE id=?').get(c.provider);
+        if(!p?.enabled||!p.secret||!p.model)throw new AppError(409,'PROVIDER_NOT_CONFIGURED','管理员尚未启用并配置这个模型');
+        requireValue(db.prepare('SELECT count(*) AS n FROM messages WHERE conversation_id=?').get(c.id).n<1000,'会话过长，请新建对话');
+        if(!chatRate.take(u.id))throw new AppError(429,'CHAT_RATE_LIMIT','发送过于频繁，请稍后再试');
+        transaction(()=>{
+          const current=usage(u),global=db.prepare('SELECT coalesce(sum(used),0) AS n FROM usage WHERE day=?').get(day()).n;
+          if(current.used>=u.daily_limit||global>=config.globalDailyLimit)throw new AppError(429,'DAILY_LIMIT','今日调用额度已用完');
+          db.prepare('INSERT INTO usage(user_id,day,used) VALUES(?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET used=used+1').run(u.id,day());
+        });
+        busyUsers.add(u.id);const controller=new AbortController();controllers.add(controller);
+        const cancel=()=>{if(!res.writableEnded)controller.abort();};res.on('close',cancel);
+        try {
+          const history=db.prepare('SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 40').all(c.id).reverse();
+          let size=b.message.length;
+          const context=[];
+          for(let i=history.length-1;i>=0;i--){if(size+history[i].content.length>64000)break;context.unshift(history[i]);size+=history[i].content.length;}
+          while(context.length&&context[0].role!=='user')context.shift();
+          context.push({role:'user',content:b.message.trim()});
+          let answer;
+          try {answer=await providerCaller({...providerView(p),apiKey:decryptSecret(p.secret,config.masterKey,p.id)},context,{allowedHosts:config.allowedHosts,signal:controller.signal});}
+          catch {throw new AppError(502,'PROVIDER_FAILED','模型调用失败，请检查 API 地址、密钥、模型名称、额度和网络连接后重试');}
+          if(controller.signal.aborted)return;
+          refreshAuth();
+          if(!answer||typeof answer.text!=='string'||!answer.text.trim()||answer.text.length>1000000)throw new AppError(502,'INVALID_PROVIDER_RESPONSE','模型没有返回有效文本');
+          const now=iso();
+          transaction(()=>{const insert=db.prepare('INSERT INTO messages(conversation_id,role,content,created_at) VALUES(?,?,?,?)');insert.run(c.id,'user',b.message.trim(),now);insert.run(c.id,'assistant',answer.text,now);
+            db.prepare('UPDATE conversations SET title=?,updated_at=? WHERE id=?').run(c.title==='新对话'?b.message.trim().slice(0,48):c.title,now,c.id);});
+          return json(res,200,{...thread(owned(c.id,u)),usage:usage(u)});
+        } finally {res.off('close',cancel);busyUsers.delete(u.id);controllers.delete(controller);}
+      }
+      throw new AppError(404,'NOT_FOUND','接口不存在');
+    }
+    if(!['GET','HEAD'].includes(method))throw new AppError(405,'METHOD_NOT_ALLOWED','请求方法不支持');
+    let relative=['/','/login','/codex','/claude','/gemini','/settings'].includes(path)?'index.html':decodeURIComponent(path).replace(/^\//,'');
+    const target=resolve(publicDir,relative),extension=extname(target);
+    if(!target.startsWith(resolve(publicDir)+sep)||!['.html','.css','.js','.svg','.ico'].includes(extension))throw new AppError(404,'NOT_FOUND','页面不存在');
+    let bytes;try{bytes=await readFile(target);}catch{throw new AppError(404,'NOT_FOUND','页面不存在');}
+    res.writeHead(200,{'Content-Type':({'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon'})[extension]});
+    res.end(method==='HEAD'?undefined:bytes);
+  }
+  const server=createServer((req,res)=>{route(req,res).catch(error=>{
+    if(res.destroyed||res.writableEnded)return;
+    const known=error instanceof AppError;
+    const providerValidation=!known&&Number.isInteger(error.status)&&error.status===400&&typeof error.code==='string'&&error.code.startsWith('INVALID_');
+    if(res.headersSent){res.destroy();return;}
+    json(res,known?error.status:providerValidation?400:500,{error:{code:known?error.code:providerValidation?'INVALID_PROVIDER_CONFIG':'INTERNAL_ERROR',message:known?error.message:providerValidation?'模型配置无效，请检查 API 地址、模型及协议':'服务暂时不可用，请稍后重试'}});
+  });});
+  server.requestTimeout=15000;server.headersTimeout=10000;server.keepAliveTimeout=5000;server.maxHeadersCount=64;
+  return {server,db,async close(){for(const c of controllers)c.abort();await new Promise(resolve=>server.close(resolve));server.closeAllConnections();db.close();}};
+}

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Model Studio，让不同模型在一个安静、有序的空间里协作。">
+  <title>Model Studio</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div id="boot" class="boot"><span class="brand-mark">m<span>·</span></span><p>正在打开你的工作空间</p></div>
+  <section id="login-view" class="login-view" hidden>
+    <div class="login-story">
+      <a class="brand" href="/codex"><span class="brand-mark">m<span>·</span></span><span>Model Studio</span></a>
+      <div class="story-copy"><div class="eyebrow">ONE SPACE. DIFFERENT PERSPECTIVES.</div><h1>一个空间，<br>更多思考的可能。</h1><p>让代码、文字与灵感，各得其所。<br>连接你选择的模型，从一个好问题开始。</p></div>
+      <div class="studio-orbit" aria-hidden="true"><div class="orbit-line"></div><div class="orbit-card orbit-code"><span>01 / CODE</span><strong>把想法<br>变为方法</strong><b>&gt;_</b></div><div class="orbit-card orbit-think"><span>02 / THINK</span><strong>留出空间<br>认真思考</strong><b>✳</b></div><div class="orbit-card orbit-create"><span>03 / CREATE</span><strong>探索更多<br>新的可能</strong><b>✧</b></div></div>
+      <div class="story-footer">独立的多模型工作空间 <span>DESIGNED FOR FOCUS</span></div>
+    </div>
+    <div class="login-panel"><div class="login-form-wrap"><div class="eyebrow">WELCOME BACK</div><h2>回到你的工作空间</h2><p class="muted">使用管理员为你创建的账号登录。</p><form id="login-form"><label for="username">用户名</label><input id="username" name="username" autocomplete="username" required maxlength="64" placeholder="输入用户名"><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required placeholder="输入密码"><p id="login-error" class="form-error" role="alert" hidden></p><button class="primary-button login-submit" type="submit">登录工作空间 <span>↗</span></button></form><p class="login-note">仅限受邀成员使用。需要账号时，请联系管理员。</p></div><p class="independent-note">Model Studio 是独立应用，与模型服务商无官方关联。</p></div>
+  </section>
+  <div id="workspace" class="workspace" hidden>
+    <button id="sidebar-backdrop" class="sidebar-backdrop" aria-label="关闭侧栏" hidden></button>
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" id="brand-home" href="/codex"><span class="brand-mark">m<span>·</span></span><span>Model Studio<small>YOUR AI WORKSPACE</small></span></a>
+      <button id="new-chat" class="new-chat"><span>＋</span> 新建对话 <kbd>NEW</kbd></button>
+      <div class="nav-label">工作空间</div><nav id="provider-nav" class="provider-nav" aria-label="模型工作空间"></nav>
+      <div class="history-heading"><span class="nav-label">最近的对话</span><span id="history-count" class="history-count">0</span></div>
+      <div id="history" class="history" aria-label="历史对话"></div>
+      <div class="sidebar-bottom"><div class="quota"><div><span>今日用量</span><strong id="quota-value">—</strong></div><progress id="quota-progress" max="100" value="0" aria-label="今日请求用量"></progress></div><button id="settings-button" class="sidebar-button" hidden><span>⚙</span> 管理工作空间</button><button id="account-button" class="account-button"><span class="avatar" id="account-avatar">U</span><span><strong id="account-name"></strong><small id="account-role"></small></span><span class="account-more">···</span></button></div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar"><div class="topbar-left"><button id="mobile-menu" class="icon-button mobile-menu" aria-label="打开侧栏">☰</button><span class="breadcrumb">工作空间 <span>/</span></span><strong id="workspace-label">Codex</strong><span id="workspace-badge" class="workspace-badge">CODE</span></div><div class="topbar-right"><span id="connection-dot" class="status-dot"></span><span id="model-label">未配置模型</span><button id="top-settings" class="icon-button" aria-label="模型设置" hidden>⚙</button></div></header>
+      <div class="content-layout"><section class="conversation-pane" aria-label="对话"><div id="conversation-scroll" class="conversation-scroll"><div id="welcome" class="welcome"></div><div id="messages" class="messages" aria-live="polite"></div><div id="waiting" class="waiting" role="status" hidden><span class="waiting-dot"></span><span>正在等待模型回复…</span><span class="waiting-detail">这可能需要一些时间</span></div></div>
+        <div class="composer-area"><div id="provider-notice" class="provider-notice" hidden></div><p id="chat-error" class="chat-error" role="alert" hidden></p><form id="chat-form" class="composer"><label for="prompt" class="sr-only">发送消息</label><textarea id="prompt" rows="3" maxlength="16000" placeholder="你想从哪里开始？"></textarea><div class="composer-bottom"><span class="composer-model"><span id="composer-symbol" class="mini-symbol">&gt;_</span><span id="composer-model">选择一个模型</span></span><div class="composer-actions"><span class="keyboard-hint">Enter 发送 · Shift + Enter 换行</span><button id="send-button" class="send-button" type="submit" aria-label="发送消息">↑</button></div></div></form><div class="composer-footer"><span id="composer-caption">一个好问题，是一切的开始。</span><span>模型可能出错，请核实重要信息。</span></div></div>
+      </section><aside id="context-panel" class="context-panel"><div class="context-title">对话上下文 <span>↗</span></div><div class="context-box"><span class="context-kicker">CURRENT SESSION</span><h3 id="context-name">准备开始</h3><p>把目标、约束和已有思路告诉模型，让每一步都更具体。</p><div class="context-stat"><span>消息</span><strong id="context-count">0</strong></div></div><div class="context-tips"><span class="nav-label">让回答更有帮助</span><div><b>01</b><p>描述你要解决的问题</p></div><div><b>02</b><p>提供必要的背景与约束</p></div><div><b>03</b><p>说明你希望的输出格式</p></div></div><div class="text-only-note"><span>⌘</span><p>专注于文字与代码交流<br><small>当前支持文本对话</small></p></div></aside></div>
+    </main>
+  </div>
+  <dialog id="settings-dialog" class="settings-dialog"><div class="dialog-header"><div><div class="eyebrow">WORKSPACE SETTINGS</div><h2>管理工作空间</h2></div><button id="close-settings" class="icon-button" aria-label="关闭设置">×</button></div><div class="settings-tabs"><button id="tab-providers" class="tab active" type="button">模型连接</button><button id="tab-users" class="tab" type="button">成员管理</button></div><div id="settings-content" class="settings-content"></div></dialog>
+  <dialog id="account-dialog" class="account-dialog"><div class="dialog-header"><div><div class="eyebrow">YOUR ACCOUNT</div><h2>账号设置</h2></div><button id="close-account" class="icon-button" aria-label="关闭账号设置">×</button></div><form id="password-form" class="account-form"><p class="muted">修改密码后，需要重新登录所有设备。</p><label for="current-password">当前密码</label><input id="current-password" name="currentPassword" type="password" autocomplete="current-password" required><label for="new-password">新密码</label><input id="new-password" name="newPassword" type="password" autocomplete="new-password" minlength="14" maxlength="128" required><p class="field-hint">14–128 个字符。</p><p id="password-error" class="form-error" role="alert" hidden></p><button class="primary-button" type="submit">更新密码</button></form><div class="account-logout"><button id="logout-button" class="danger-button" type="button">退出登录</button></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

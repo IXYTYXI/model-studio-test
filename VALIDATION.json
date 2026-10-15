@@ -1,0 +1,29 @@
+{
+  "version": "1.0.0",
+  "verifiedOn": "2026-10-14",
+  "runtime": "Node.js 24.13.0",
+  "automatedTests": { "passed": 50, "failed": 0, "command": "npm test" },
+  "docker": {
+    "offlineBuild": "passed with --network=none",
+    "imageTag": "model-studio:verify-20261014",
+    "imageDigest": "sha256:0eb22dbd615ca390e3c1b5848d6413fda922d92f07425d4f83b8c37d6ca394a6",
+    "environment": "Docker Desktop Linux arm64",
+    "nonRootUid": 65532,
+    "readonlyRoot": true,
+    "restartPersistence": "passed",
+    "healthAndAccessControls": "passed",
+    "testNetwork": "none"
+  },
+  "browser": {
+    "login": "passed",
+    "threeLayoutsAndSettings": "passed",
+    "mobileViewport": "390x844; no horizontal overflow",
+    "consoleErrors": 0
+  },
+  "notVerified": [
+    "Real paid model API calls; no real API keys were supplied",
+    "Public deployment, domain and production TLS",
+    "Production rootless Docker host or amd64 runtime",
+    "Awesome Deploy compatibility: current internal networks block external model APIs"
+  ]
+}

@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.*
+!.env.example
+data/
+*.sqlite*
+.DS_Store
+test-results/
+# Local delivery planning; not part of the public source distribution.
+IMPLEMENTATION.txt
