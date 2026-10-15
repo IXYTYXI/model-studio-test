@@ -48,3 +48,19 @@ test('reopening stored data retains accounts and fails closed with a different m
   db.close();
   await assert.rejects(openStore({...config,masterKey:randomBytes(32)},PROVIDER_DEFAULTS));
 });
+test('upgrading the old schema preserves members and history without restoring revoked shared access',async t=>{
+  const dataDir=await mkdtemp(join(tmpdir(),'studio-upgrade-'));t.after(()=>rm(dataDir,{recursive:true,force:true}));
+  const config={dataDir,masterKey:randomBytes(32),bootstrapUsername:'admin',bootstrapPassword:'first-password-long-2026',defaultDailyLimit:50};
+  let db=await openStore(config,PROVIDER_DEFAULTS);
+  db.prepare('INSERT INTO users(id,username,password,role,created_at) VALUES(?,?,?,?,?)').run('legacy-member','legacy','legacy-hash','member','2026-10-14');
+  db.prepare('INSERT INTO conversations(id,user_id,provider,title,created_at,updated_at) VALUES(?,?,?,?,?,?)').run('legacy-chat','legacy-member','openai','Existing history','2026-10-14','2026-10-14');
+  db.exec('DROP TABLE personal_providers; DROP TABLE google_accounts; ALTER TABLE users DROP COLUMN allow_shared_keys;');db.close();
+  db=await openStore({...config,bootstrapPassword:undefined},PROVIDER_DEFAULTS);
+  assert.equal(db.prepare('SELECT allow_shared_keys FROM users WHERE id=?').get('legacy-member').allow_shared_keys,1);
+  assert.equal(db.prepare('SELECT title FROM conversations WHERE id=?').get('legacy-chat').title,'Existing history');
+  assert.equal(db.prepare('SELECT count(*) AS n FROM google_accounts').get().n,0);
+  db.prepare('UPDATE users SET allow_shared_keys=0 WHERE id=?').run('legacy-member');db.close();
+  db=await openStore(config,PROVIDER_DEFAULTS);
+  assert.equal(db.prepare('SELECT allow_shared_keys FROM users WHERE id=?').get('legacy-member').allow_shared_keys,0);
+  assert.equal(db.prepare('SELECT password FROM users WHERE id=?').get('legacy-member').password,'legacy-hash');db.close();
+});

@@ -8,31 +8,34 @@ import {AppError,requireValue} from './errors.js';
 import {hashPassword,verifyPassword,randomToken,tokenHash,equalToken,encryptSecret,decryptSecret,RateLimiter} from './security.js';
 import {json,readJson,headers,cookie,sessionToken} from './http.js';
 import {PROVIDER_DEFAULTS,validateProviderConfig,callProvider} from './providers.js';
+import {createGoogleLogin} from './google-login.js';
+import {createPersonalProviders,canUseSharedKeys} from './personal-providers.js';
 
 const publicDir=fileURLToPath(new URL('../public/',import.meta.url));
 const day=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const iso=()=>new Date().toISOString();
-const userView=u=>({id:u.id,username:u.username,role:u.role,enabled:!!u.enabled,dailyLimit:u.daily_limit});
 const conversationView=c=>({id:c.id,provider:c.provider,title:c.title,createdAt:c.created_at,updatedAt:c.updated_at});
 const messageView=m=>({id:m.id,role:m.role,content:m.content,createdAt:m.created_at});
 const username=value=>{requireValue(typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_.@-]{1,63}$/.test(value),'用户名须为 2–64 位字母、数字或 . _ @ -');return value.toLowerCase();};
 const dailyLimit=value=>{requireValue(Number.isInteger(value)&&value>=1&&value<=10000,'每日调用上限须为 1–10000 的整数');return value;};
 
-export async function createApp(config,{providerCaller=callProvider}={}) {
+export async function createApp(config,{providerCaller=callProvider,googleClient,googleNow}={}) {
   const db=await openStore(config,PROVIDER_DEFAULTS),secure=config.publicOrigin.startsWith('https:');
+  const userView=u=>({id:u.id,username:u.username,role:u.role,enabled:!!u.enabled,dailyLimit:u.daily_limit,allowSharedKeys:canUseSharedKeys(u),email:db.prepare('SELECT email FROM google_accounts WHERE user_id=?').get(u.id)?.email||null,passwordEnabled:u.password.startsWith('scrypt:')});
   const environmentKey=id=>config.providerKeys?.[id]||'';
   const keySource=p=>environmentKey(p.id)?'environment':p.secret?'stored':'none';
   const providerView=p=>({id:p.id,label:p.label,baseUrl:p.base_url,model:p.model,protocol:p.protocol,enabled:!!p.enabled,hasKey:keySource(p)!=='none',keySource:keySource(p),maxOutputTokens:p.max_output});
+  const personal=createPersonalProviders({db,config,sharedView:providerView});
   const loginByIp=new RateLimiter({limit:15,windowMs:600000});
   const loginByUser=new RateLimiter({limit:8,windowMs:600000});
   const chatRate=new RateLimiter({limit:8,windowMs:60000});
   const busyUsers=new Set(),controllers=new Set();let passwordWork=0;
   const fakeHash=await hashPassword(randomToken());
   const usage=u=>({used:db.prepare('SELECT used FROM usage WHERE user_id=? AND day=?').get(u.id,day())?.used||0,limit:u.daily_limit,day:day()});
-  const summaries=()=>db.prepare('SELECT * FROM providers ORDER BY rowid').all().map(p=>({id:p.id,label:p.label,model:p.model,enabled:!!p.enabled,configured:!!(keySource(p)!=='none'&&p.model&&p.enabled)}));
-  const sessionView=(u,csrf)=>({user:userView(u),csrfToken:csrf,providers:summaries(),usage:usage(u),version:'1.0.0'});
+  const summaries=u=>PROVIDER_DEFAULTS.map(p=>{const active=personal.effective(u,p.id);return {id:p.id,label:p.label,model:active.model,enabled:active.enabled,configured:active.configured,credentialSource:active.credentialSource};});
+  const sessionView=(u,csrf)=>({user:userView(u),csrfToken:csrf,providers:summaries(u),usage:usage(u),version:'1.0.0'});
   function authenticated(req) {
-    const token=sessionToken(req);
+    const token=sessionToken(req,secure);
     const row=token&&db.prepare('SELECT users.*,sessions.csrf,sessions.token FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token=? AND sessions.expires>? AND users.enabled=1').get(tokenHash(token),Date.now());
     if(!row)throw new AppError(401,'LOGIN_REQUIRED','请先登录');return row;
   }
@@ -46,6 +49,14 @@ export async function createApp(config,{providerCaller=callProvider}={}) {
     passwordWork++;try{return await fn();}finally{passwordWork--;}
   }
   function transaction(fn) {db.exec('BEGIN IMMEDIATE');try{const value=fn();db.exec('COMMIT');return value;}catch(e){db.exec('ROLLBACK');throw e;}}
+  function issueSession(user,res) {
+    const token=randomToken(),csrf=randomToken(),expires=Date.now()+43200000;
+    db.prepare('DELETE FROM sessions WHERE expires<=?').run(Date.now());
+    db.prepare('DELETE FROM sessions WHERE user_id=? AND token NOT IN (SELECT token FROM sessions WHERE user_id=? ORDER BY expires DESC LIMIT 4)').run(user.id,user.id);
+    db.prepare('INSERT INTO sessions(token,user_id,csrf,expires) VALUES(?,?,?,?)').run(tokenHash(token),user.id,csrf,expires);
+    cookie(res,token,secure);return sessionView(user,csrf);
+  }
+  const googleLogin=createGoogleLogin({config,db,issueSession,client:googleClient,now:googleNow});
 
   async function route(req,res) {
     headers(res,secure);
@@ -53,6 +64,7 @@ export async function createApp(config,{providerCaller=callProvider}={}) {
     const mutation=!['GET','HEAD','OPTIONS'].includes(method);
     if(mutation&&req.headers.origin!==config.publicOrigin)throw new AppError(403,'ORIGIN_DENIED','请求来源不允许');
     if(method==='GET'&&path==='/healthz'){db.prepare('SELECT count(*) FROM settings').get();return json(res,200,{status:'ok'});}
+    if(await googleLogin(req,res,url))return;
     if(path==='/api/login'&&method==='POST') {
       const body=await readJson(req),name=typeof body.username==='string'?body.username.toLowerCase():'';
       const ip=req.socket.remoteAddress||'unknown'; // Forwarded headers are untrusted.
@@ -61,11 +73,7 @@ export async function createApp(config,{providerCaller=callProvider}={}) {
       const valid=await passwordTask(()=>verifyPassword(body.password,u?.password||fakeHash));
       const latest=u&&db.prepare('SELECT * FROM users WHERE id=?').get(u.id);
       if(!valid||!latest?.enabled||latest.password!==u.password)throw new AppError(401,'INVALID_CREDENTIALS','用户名或密码不正确');
-      const token=randomToken(),csrf=randomToken(),expires=Date.now()+43200000;
-      db.prepare('DELETE FROM sessions WHERE expires<=?').run(Date.now());
-      db.prepare('DELETE FROM sessions WHERE user_id=? AND token NOT IN (SELECT token FROM sessions WHERE user_id=? ORDER BY expires DESC LIMIT 4)').run(u.id,u.id);
-      db.prepare('INSERT INTO sessions(token,user_id,csrf,expires) VALUES(?,?,?,?)').run(tokenHash(token),u.id,csrf,expires);
-      cookie(res,token,secure);return json(res,200,sessionView(latest,csrf));
+      return json(res,200,issueSession(latest,res));
     }
     if(path.startsWith('/api/')) {
       let u;
@@ -77,7 +85,11 @@ export async function createApp(config,{providerCaller=callProvider}={}) {
       refreshAuth();
       async function bodyAfterAuth() {const body=await readJson(req);refreshAuth();return body;}
       if(path==='/api/session'&&method==='GET')return json(res,200,sessionView(u,u.csrf));
-      if(path==='/api/providers'&&method==='GET')return json(res,200,{providers:summaries()});
+      if(path==='/api/providers'&&method==='GET')return json(res,200,{providers:summaries(u)});
+      if(path==='/api/account/providers'&&method==='GET')return json(res,200,personal.settings(u));
+      const personalMatch=path.match(/^\/api\/account\/providers\/(openai|anthropic|gemini)$/);
+      if(personalMatch&&method==='PUT'){const body=await bodyAfterAuth();return json(res,200,{provider:personal.save(u,personalMatch[1],body)});}
+      if(personalMatch&&method==='DELETE')return json(res,200,{provider:personal.clear(u,personalMatch[1])});
       if(path==='/api/logout'&&method==='POST'){db.prepare('DELETE FROM sessions WHERE token=?').run(u.token);cookie(res,'',secure,0);return json(res,200,{ok:true});}
       if(path==='/api/password'&&method==='POST') {
         const b=await bodyAfterAuth(),oldHash=u.password;
@@ -104,13 +116,14 @@ export async function createApp(config,{providerCaller=callProvider}={}) {
       if(path==='/api/admin/users'&&method==='GET')return json(res,200,{users:db.prepare('SELECT * FROM users ORDER BY created_at').all().map(row=>({...userView(row),used:usage(row).used}))});
       if(path==='/api/admin/users'&&method==='POST') {
         const b=await bodyAfterAuth(),name=username(b.username),limit=dailyLimit(b.dailyLimit??config.defaultDailyLimit);
+        requireValue(b.allowSharedKeys===undefined||typeof b.allowSharedKeys==='boolean','平台连接权限必须是布尔值');
         requireValue(db.prepare('SELECT count(*) AS n FROM users').get().n<100,'最多支持 100 个账号');
         if(db.prepare('SELECT id FROM users WHERE username=?').get(name))throw new AppError(409,'USERNAME_EXISTS','用户名已存在');
         const hashed=await passwordTask(()=>hashPassword(b.password));
         refreshAuth();
         requireValue(db.prepare('SELECT count(*) AS n FROM users').get().n<100,'最多支持 100 个账号');
         if(db.prepare('SELECT id FROM users WHERE username=?').get(name))throw new AppError(409,'USERNAME_EXISTS','用户名已存在');
-        const id=randomUUID();db.prepare('INSERT INTO users(id,username,password,role,daily_limit,created_at) VALUES(?,?,?,?,?,?)').run(id,name,hashed,'member',limit,iso());
+        const id=randomUUID();db.prepare('INSERT INTO users(id,username,password,role,daily_limit,created_at,allow_shared_keys) VALUES(?,?,?,?,?,?,?)').run(id,name,hashed,'member',limit,iso(),b.allowSharedKeys===true?1:0);
         return json(res,201,{user:userView(db.prepare('SELECT * FROM users WHERE id=?').get(id))});
       }
       const userMatch=path.match(/^\/api\/admin\/users\/([a-f0-9-]{36})$/);
@@ -118,12 +131,13 @@ export async function createApp(config,{providerCaller=callProvider}={}) {
         const b=await bodyAfterAuth();let target=db.prepare('SELECT * FROM users WHERE id=?').get(userMatch[1]);
         if(!target)throw new AppError(404,'NOT_FOUND','账号不存在');
         requireValue(b.enabled===undefined||typeof b.enabled==='boolean','账号状态必须是布尔值');
+        requireValue(b.allowSharedKeys===undefined||typeof b.allowSharedKeys==='boolean','平台连接权限必须是布尔值');
         requireValue(target.id!==u.id||b.enabled!==false,'不能停用当前管理员');
         const hashed=b.password?await passwordTask(()=>hashPassword(b.password)):target.password;
         refreshAuth();
         target=db.prepare('SELECT * FROM users WHERE id=?').get(userMatch[1]);
         const limit=b.dailyLimit===undefined?target.daily_limit:dailyLimit(b.dailyLimit);
-        transaction(()=>{db.prepare('UPDATE users SET enabled=?,daily_limit=?,password=? WHERE id=?').run(b.enabled===undefined?target.enabled:(b.enabled?1:0),limit,hashed,target.id);
+        transaction(()=>{db.prepare('UPDATE users SET enabled=?,daily_limit=?,password=?,allow_shared_keys=? WHERE id=?').run(b.enabled===undefined?target.enabled:(b.enabled?1:0),limit,hashed,b.allowSharedKeys===undefined?target.allow_shared_keys:(b.allowSharedKeys?1:0),target.id);
           if(b.enabled===false||b.password)db.prepare('DELETE FROM sessions WHERE user_id=?').run(target.id);});
         return json(res,200,{user:userView(db.prepare('SELECT * FROM users WHERE id=?').get(target.id))});
       }
@@ -150,8 +164,8 @@ export async function createApp(config,{providerCaller=callProvider}={}) {
         const c=owned(b.conversationId,u);
         requireValue(typeof b.message==='string'&&b.message.trim().length>0&&b.message.length<=16000,'消息须为 1–16000 个字符');
         if(busyUsers.has(u.id)||busyUsers.size>=4)throw new AppError(429,'CHAT_BUSY','当前请求较多，请稍后再试');
-        const p=db.prepare('SELECT * FROM providers WHERE id=?').get(c.provider);
-        if(!p?.enabled||keySource(p)==='none'||!p.model)throw new AppError(409,'PROVIDER_NOT_CONFIGURED','管理员尚未启用并配置这个模型');
+        const p=personal.effective(u,c.provider);
+        if(!p.configured)throw new AppError(409,'PROVIDER_NOT_CONFIGURED','请在个人模型设置中配置 API Key 和模型，或联系管理员授权平台连接');
         requireValue(db.prepare('SELECT count(*) AS n FROM messages WHERE conversation_id=?').get(c.id).n<1000,'会话过长，请新建对话');
         if(!chatRate.take(u.id))throw new AppError(429,'CHAT_RATE_LIMIT','发送过于频繁，请稍后再试');
         transaction(()=>{
@@ -169,7 +183,7 @@ export async function createApp(config,{providerCaller=callProvider}={}) {
           while(context.length&&context[0].role!=='user')context.shift();
           context.push({role:'user',content:b.message.trim()});
           let answer;
-          try {answer=await providerCaller({...providerView(p),apiKey:environmentKey(p.id)||decryptSecret(p.secret,config.masterKey,p.id)},context,{allowedHosts:config.allowedHosts,signal:controller.signal});}
+          try {answer=await providerCaller(personal.effective(u,c.provider,true),context,{allowedHosts:config.allowedHosts,signal:controller.signal});}
           catch {throw new AppError(502,'PROVIDER_FAILED','模型调用失败，请检查 API 地址、密钥、模型名称、额度和网络连接后重试');}
           if(controller.signal.aborted)return;
           refreshAuth();

@@ -17,9 +17,14 @@ export function headers(res,secure) {
   if(secure)res.setHeader('Strict-Transport-Security','max-age=31536000');
 }
 export function cookie(res,token,secure,maxAge=43200) {
-  res.setHeader('Set-Cookie',`studio_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure?'; Secure':''}`);
+  res.setHeader('Set-Cookie',`${secure?'__Host-':''}studio_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure?'; Secure':''}`);
 }
-export function sessionToken(req) {
-  const match=(req.headers.cookie||'').match(/(?:^|;\s*)studio_session=([a-zA-Z0-9_-]{43})(?:;|$)/);
-  return match?match[1]:null;
+export function cookieToken(req,name) {
+  const values=(req.headers.cookie||'').split(';').map(value=>value.trim()).filter(value=>value.startsWith(name+'='));
+  if(values.length!==1)return null;
+  const token=values[0].slice(name.length+1);
+  return /^[A-Za-z0-9_-]{43}$/.test(token)?token:null;
+}
+export function sessionToken(req,secure=false) {
+  return cookieToken(req,`${secure?'__Host-':''}studio_session`);
 }

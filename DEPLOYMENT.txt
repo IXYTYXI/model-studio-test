@@ -5,28 +5,28 @@ Model Studio 部署说明
 仓库：https://github.com/IXYTYXI/model-studio-test.git
 分支：codex/model-studio；提交并推送后以 git rev-parse HEAD 取得最终完整 commit，用该 commit 验收，不使用未提交文件。
 应用为新应用，显示名 Chat Studio，用户选定前缀 chatstd；预期地址 https://chatstd.awesome.guanghexinzhi.cn。前缀是否空闲、服务器容量与实际公网策略仍需平台核验；没有创建 appId，也没有提交真实部署。
-本次已补齐部署清单，纠正旧版无公网出口的说明，并按用户明确授权新增平台模型 Key 注入支持。没有改动平台网络策略、登录权限、数据模型、模型请求协议或业务路由。
+本次已补齐部署清单、平台模型 Key 注入支持，并按用户授权增加可选 Google 登录及首次登录自动创建普通成员。没有改动平台网络策略或模型请求协议。Google 客户端配置仍为注释，尚未提供真实凭据，也未完成真实 Google 登录验收。
 
 Awesome Deploy 操作员准备
 1. 确认平台管理员已启用并验收 public-https-v1；新部署才使用新策略，重试旧冻结任务无效。该策略允许公网 IPv4 TCP 443 和平台指定 DNS；清单不添加 egress、DNS、代理或 Compose 网络字段。官方 API 及兼容服务均需实际在公网 IPv4 的 443 可达。
 2. 当前清单启动 Node.js 24，命令为镜像原有 node src/server.js，工作目录 /app，监听 0.0.0.0:8080；配置 1 CPU / 512 MiB。单个 / 前缀路由保留路径，前端、/api 与 /healthz 同源；PUBLIC_ORIGIN 必须保持与最终 HTTPS 地址完全相同。
 3. 为该规范仓库与 chatstd 前缀配置 MASTER_KEY 和 BOOTSTRAP_PASSWORD 两个业务秘密。MASTER_KEY 是安全随机生成的 64 位十六进制字符串；BOOTSTRAP_PASSWORD 为 14–128 字符，只用于空数据库创建 admin。真实值由操作员安全输入，不写入仓库或部署请求。平台会按原环境变量名注入，不要使用 *_FILE，因为平台未挂载对应文件。
-4. 模型 Key 是按需可选的。准备哪家供应商的有效业务 Key，就在 awesome.yaml 的 secretRefs 中取消对应行的注释，并以相同名称在平台配置 OPENAI_API_KEY、ANTHROPIC_API_KEY 或 GEMINI_API_KEY。没有该供应商 Key 时不要添加引用，避免无必要秘密导致部署失败。当前三个模型引用默认注释，所有供应商默认禁用；默认清单可验证应用启动与登录，但不能证明真实模型功能已可用。
+4. 模型 Key 是按需可选的。准备哪家供应商的有效业务 Key，就在 awesome.yaml 的 secretRefs 中取消对应行的注释，并以相同名称在平台配置 OPENAI_API_KEY、ANTHROPIC_API_KEY 或 GEMINI_API_KEY。没有该供应商 Key 时不要添加引用，避免无必要秘密导致部署失败。当前三个模型引用默认注释，所有供应商默认禁用；默认清单可验证应用启动与密码登录，但不能证明真实模型或 Google 登录功能已可用。Google 登录的成对配置见下文。
 5. 平台秘密设置使用交互输入，不把值写进参数。例如操作员在服务器执行：
    /opt/awesome-deploy/.venv/bin/awesome-deploy --config /etc/awesome-deploy/config.json secret-set --repository https://github.com/IXYTYXI/model-studio-test.git --subdomain chatstd --name MASTER_KEY
-   对 BOOTSTRAP_PASSWORD 和实际启用的模型 Key 重复操作。不要借用平台诊断 AI Key。秘密名称使用 1–64 位字母、数字、下划线或中划线，首位字母；本清单名称均符合。
+   对 BOOTSTRAP_PASSWORD、实际启用的模型 Key 及可选的 GOOGLE_CLIENT_SECRET 重复操作。GOOGLE_CLIENT_ID 不是秘密，放在清单 env 中。不要借用平台诊断 AI Key。秘密名称使用 1–64 位字母、数字、下划线或中划线，首位字母；本清单名称均符合。
 6. 访问平台 /api/v1/schema、/api/v1/capabilities 并对 awesome.yaml 执行 /api/v1/preflight。配置通过不代表秘密已存在、镜像可拉取或域名空闲。推送配置后，再按授权提交新部署；需要保留首次返回的 appId，后续更新显式使用它。
 7. 观察任务到 succeeded，核对完整 commit 与实际 URL，再登录管理页面填写模型名称、API 地址和协议。平台注入的 Key 显示“由平台管理”；启用后使用自己的 Key 发送真实对话验收。HTTP 健康探针仅查询数据库，不验证外部供应商或计费权限。
 8. 首次初始化成功后，可从后续 awesome.yaml 移除 BOOTSTRAP_PASSWORD 引用并提交更新，保留 MASTER_KEY。Key 轮换通过平台秘密配置和新部署完成；无需在页面重复填写。
 
 平台持久化与验收边界
 服务名 web，storage.name 为 studio，固定挂载 /data，SQLite 主库及 WAL/SHM 均在其中。Dockerfile 已创建 /data 并赋予 UID/GID 65532 写权限。更新保留相同 appId、服务名、storage 名与 MASTER_KEY；不要重新创建应用来代替更新。平台持久服务更新为 recreate，会有停机窗口；回滚镜像不会回滚已写的数据。
-无第三方运行依赖，Dockerfile RUN 不访问网络，基础镜像已固定摘要；平台仍需能拉取该镜像，并确认服务器架构受支持。Dockerfile 无 VOLUME、ONBUILD、HEALTHCHECK 或不支持的 COPY/RUN 参数。
+运行时使用 Node 内置模块和已收录到 vendor/jose 的 jose@6.2.12；该库用于验证 Google ID Token，来源、完整性和 MIT 许可见 THIRD_PARTY_NOTICES.txt。构建无需 npm install 或依赖下载，Dockerfile RUN 不访问网络，基础镜像已固定摘要；平台仍需能拉取该镜像，并确认服务器架构受支持。Dockerfile 无 VOLUME、ONBUILD、HEALTHCHECK 或不支持的 COPY/RUN 参数。
 验证记录见 VALIDATION.json 与 PLATFORM-VALIDATION.json。项目测试和本地配置校验不能替代线上 preflight、Rootless Docker 运行、HTTPS 发布、秘密归属检查或真实供应商调用；未完成这些验收前不宣称已上线。
 
 本机 Node.js 运行
 使用 Node.js 24。运行 npm run setup，再运行 npm start。npm start 从项目根目录的 .env 读取配置。默认只监听本机 127.0.0.1:8080，浏览器地址必须与 PUBLIC_ORIGIN 完全一致。
-项目仅使用 Node 内置模块与 SQLite，不需要安装运行依赖。npm test 运行仓库自带测试；测试不进行真实付费调用。
+项目使用 Node 内置模块、SQLite 及随仓库提供的 jose@6.2.12，不需要 npm install。npm test 运行仓库自带测试；测试不进行真实付费调用，也不能代替真实 Google 账号登录验收。
 
 独立 Docker Compose
 前提：可使用 Docker Compose 的主机具有出站 DNS 与 HTTPS；基础镜像已在本地缓存。Dockerfile 固定使用：
@@ -45,6 +45,28 @@ Dockerfile 不下载依赖。Compose 的构建阶段禁用网络；镜像未缓�
 需要宿主机反向代理提供有效 TLS 证书，并转发至 127.0.0.1:8080。将原始浏览器 Origin 原样传递；不要重写成内网地址。PUBLIC_ORIGIN 必须是用户访问的精确 HTTPS origin（含非标准端口时也要包含端口）。HTTP 只允许 localhost、127.0.0.1、::1 开发访问。不要直接将容器端口绑定到所有网卡来替代 HTTPS。
 若代理也在容器中，不能直接用其 127.0.0.1 指向本服务；需由运维按网络环境配置专用网络和转发。当前 Compose 默认方案是宿主机反向代理。
 
+Google 登录配置与验收
+这是可选功能；没有真实 OAuth 凭据时保持关闭。登录页通过 /api/auth/config 读取启用状态，只在已配置时显示 Google 入口，密码登录继续保留。应用没有 Google 邮箱或域名白名单，所有通过验证且未被停用的 Google 账号均可登录；首次登录自动创建 member，不授予管理员角色。仍受全站 100 个账号上限、默认每账号每日 50 次和全站每日 500 次限制。
+
+1. 在 Google Cloud / Google Auth Platform 选择自己的项目，配置应用名称、支持联系方式等同意屏幕资料，受众选 External；创建 Application type 为 Web application 的 OAuth 客户端。本服务只请求 openid email，不请求 Drive、Gmail 或其他业务权限，也不需要浏览器加载 Google 外部 JS。
+2. 在 Authorized redirect URIs 精确登记所需地址：
+   生产：https://chatstd.awesome.guanghexinzhi.cn/api/auth/google/callback
+   本机：http://localhost:8080/api/auth/google/callback
+   服务按 PUBLIC_ORIGIN + /api/auth/google/callback 生成回调，scheme、主机、端口及路径必须一致。生产 PUBLIC_ORIGIN 为 https://chatstd.awesome.guanghexinzhi.cn，本机为 http://localhost:8080；改域名后需同步修改 Google 客户端与部署环境。
+3. GOOGLE_CLIENT_ID 与 GOOGLE_CLIENT_SECRET 必须同时配置。只设置其中之一或格式不合法会拒绝启动，避免出现半配置的登录入口。Client ID 不是秘密，在 awesome.yaml 的 env 取消注释并替换为真实 Web OAuth Client ID；Client Secret 由平台安全输入，在 secretRefs 中取消 GOOGLE_CLIENT_SECRET 引用。两处必须同时启用。不要把 Secret 写入 awesome.yaml 的 env、源码、部署请求或文档；当前两个示例均保留注释，无真实凭据时不要取消注释。本机可在受限权限的 .env 同时填写，随后重启进程。
+4. External + Testing 的一般规则是仅允许测试名单内账号，最多 100 名测试用户；但 Google 明确豁免仅请求 openid、email、profile 等基本身份范围的应用。本项目仅请求 openid email，属于该例外，因此不能把 Google 测试名单当作本应用的用户白名单。如果以后新增其他 OAuth scopes，应重新核对测试、验证与发布要求。生产使用应在控制台完成正式发布及适用的品牌/权限验证；Workspace 管理策略或账号限制仍可能阻止授权。此处描述配置步骤，不代表已经发布或 Google 已批准该客户端。
+5. 配置后执行新部署或重建容器，通过最终 PUBLIC_ORIGIN 访问登录页并完成真实 Google 登录。核对首次登录角色为 member、邮箱和每日额度正确、管理员可禁用成员、退出后可重新登录；再核对密码账号仍可登录。取消授权或回调失败时应返回固定提示，不能显示令牌或原始错误内容。健康探针不会验证 Google 客户端、回调登记或外部网络。
+
+身份绑定与数据边界
+Google 身份以经过验证的 sub 为唯一绑定依据，绝不依据 email 合并现有密码账号。邮箱相同不会继承已有账号的历史数据或管理员权限；Google-only 成员初始没有本地密码，管理员可在成员管理中设置，之后使用页面显示的本地用户名和新密码登录。禁止把随机生成的 google- 用户名当作邮箱或管理员身份凭据。
+Google 身份资料仅持久化 sub 与 email；Google 访问令牌、刷新令牌和 ID Token 不写入数据库，登录过程中的令牌仅用于当次验证。数据库还保留应用自己的用户、会话和对话记录。移除 Google 配置后隐藏登录入口；Google-only 成员在未设置本地密码时将无法再次登录，操作员应提前安排账号访问方式。重启会使正在进行的授权流程失效，用户需重新发起登录。
+
+Google 官方参考
+受众、Testing 例外与发布状态：https://support.google.com/cloud/answer/15549945?hl=en
+OAuth 应用状态与生产要求：https://developers.google.com/identity/protocols/oauth2/production-readiness/overview
+Web server OAuth 客户端和重定向 URI：https://developers.google.com/identity/protocols/oauth2/web-server
+OpenID Connect 的 scope、sub 与邮箱身份规则：https://developers.google.com/identity/openid-connect/openid-connect
+
 配置说明
 MASTER_KEY：64 位十六进制字符，代表 32 字节随机密钥。MASTER_KEY_FILE 可替代内联值；文件选项优先。丢失密钥会使已保存 API key 无法解密，不能靠重新运行 setup 修复。
 BOOTSTRAP_USERNAME：默认 admin，仅用于空数据库首次创建管理员。
@@ -53,12 +75,20 @@ PUBLIC_ORIGIN：默认 http://localhost:8080；生产必须使用精确 HTTPS or
 DATA_DIR：Node 默认 ./data；Compose 强制 /data。
 DEFAULT_DAILY_LIMIT：默认 50，范围 1–10000，用于默认账号额度。
 GLOBAL_DAILY_LIMIT：默认 500，范围 1–100000，限制全站每日已接受的对话请求次数。
+GOOGLE_CLIENT_ID：可选的 Google Web OAuth Client ID，通常以 .apps.googleusercontent.com 结尾，不属于秘密；必须与 GOOGLE_CLIENT_SECRET 同时配置。两者都未设置时 Google 登录关闭。
+GOOGLE_CLIENT_SECRET：可选的 Google Web OAuth Client Secret；平台用 secretRefs 注入，本机可在 .env 配置，不返回浏览器、不写入应用数据库。不可用模型 API Key 代替；变更后需重启或新部署。
 ALLOWED_API_HOSTS：逗号分隔的额外精确 DNS 主机名，例如 api.example.com。默认官方 API 主机已经允许，不必重复。不能填 URL、端口、IP、通配符或私网主机。
 OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY：可选的业务自有模型密钥；不含空白的可打印 ASCII，最长 8192 字符。平台用 secretRefs 映射，独立 Docker 可在 .env 中配置。环境 Key 优先于管理页保存的 Key，且不会写入数据库或返回浏览器；存在环境 Key 时，页面不能修改该供应商 Key。移除环境 Key 后，如数据库原来保存过该供应商的 Key，将恢复使用原保存值；没有保存值则变为未配置。轮换环境 Key 后需新部署或重启，使进程读取新值。
 HOST、PORT：本机 setup 默认 127.0.0.1、8080；Compose 覆盖为 0.0.0.0、8080。
 _FILE 路径必须在服务进程内部可读。Compose 当前仅加载 .env，不自动挂载外部密钥文件；使用 _FILE 时需由运维添加只读挂载并检查 65532 用户读权限。不要把宿主机路径误当作容器内路径。
 
 数据、备份与升级
+个人 Key 与平台 Key
+每个用户通过“个人 API Key”配置独立 API 地址、模型、协议与密钥。个人密钥保存在 personal_providers 表，以 MASTER_KEY 加密，并通过附加认证数据绑定用户 ID 和供应商 ID；前端仅接收 hasKey 等状态，管理接口也不返回其他用户个人配置。个人自带 Key 不通过平台 secretRefs 注入，平台 secretRefs 保留用于运营者提供的共享 Key 与 Google OAuth Client Secret。
+个人连接优先按照用户主动选择执行；个人连接报错、停用或删除 Key 后均不自动改用平台连接。环境 Key 仅在平台连接内优先于管理页保存的共享 Key。新 Google 成员及新建本地成员默认 allow_shared_keys=0；管理员可逐个授权并随时撤销。升级已有数据库时，为保持现有成员行为，旧成员默认保留共享访问；管理员应按实际付费范围检查成员权限。个人 Key 的请求也计入账号与全站限额。
+首次升级自动添加 personal_providers、google_accounts 表和 users.allow_shared_keys 字段，不重建已有账号或对话。HTTPS Cookie 使用 __Host- 前缀，旧版 HTTPS 会话需重新登录。个人密钥需与 MASTER_KEY 一起备份；仅恢复数据库而缺失对应主密钥不能解密。
+
+备份操作
 保存数据库目录和对应 MASTER_KEY；二者缺一不能完整恢复。将备份存储在限制访问的位置。SQLite 可能存在 WAL/SHM 文件：使用 SQLite 支持的在线备份，或停止服务后备份整个数据目录，避免只复制正在写入的主数据库。
 Docker 场景先 docker compose stop，再由运维将命名卷完整备份；备份完成后 docker compose start。docker compose down 保留命名卷；docker compose down -v 会删除数据，不要用于普通升级。
 升级前备份数据及当前配置，重新构建固定版本镜像，再 docker compose up -d。不要更换 MASTER_KEY，也不要把新数据卷当作旧数据卷。如果修改了 PUBLIC_ORIGIN、允许主机或密钥配置，应重建容器使环境生效。

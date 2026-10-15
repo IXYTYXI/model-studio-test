@@ -13,16 +13,18 @@
     "strictSecretNames": "passed",
     "repositoryAndRef": "passed",
     "dockerfileSupportedSyntax": "passed; no registry pull performed by this static check",
-    "gatewayRoutesAndRendering": "passed; synthetic port used only for rendering"
+    "gatewayRoutesAndRendering": "passed; synthetic port used only for rendering",
+    "optionalGoogleSecretReference": "passed with client ID env and GOOGLE_CLIENT_SECRET secretRef enabled in validation-only copy"
   },
   "fileSha256": {
-    "awesome.yaml": "6f42c41e936f2f4540ddcc16d6e9d375e4bf6bdec3a54ed6b47c26f27a285328",
-    "Dockerfile": "9284dc34c630e82cd362b86cb7bc15ec69d70519e776647f3a9a85e8068426ee"
+    "awesome.yaml": "f5af78f4266de22adf9fc0d4757fb538bbf70befedc7c4739ac709e933368e37",
+    "Dockerfile": "46047859b73ea3ac43253dc28d71347b9ddb658430117a7e70463f6c26e0fceb"
   },
   "notVerified": [
     "Live platform capabilities, preflight and secret ownership",
     "Subdomain availability, TLS and production Rootless Docker deployment",
-    "Real paid provider calls and provider credential validity"
+    "Real paid provider calls and provider credential validity",
+    "Real Google client credentials, OAuth consent and callback on deployed origin"
   ],
   "providerKeys": "Optional secretRefs are commented until the operator supplies that provider key; providers remain disabled until configured."
 }

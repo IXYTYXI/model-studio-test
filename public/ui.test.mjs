@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApi, splitContent } from './ui-lib.js';
+import * as ui from './ui-lib.js';
 
 test('authenticated writes include CSRF and same-origin credentials', async () => {
   let observed;
@@ -30,4 +31,32 @@ test('content parser keeps HTML literal and separates fenced code without droppi
     { type: 'text', content: '\n后文' }
   ]);
   assert.deepEqual(splitContent('```unfinished'), [{ type: 'text', content: '```unfinished' }]);
+});
+
+test('Google sign-in starts without an authenticated CSRF token', async () => {
+  let options;
+  const api = createApi({ getToken: () => 'unrelated-token', fetcher: async (_path, request) => {
+    options = request;
+    return new Response(JSON.stringify({ url: 'https://accounts.google.com/o/oauth2/v2/auth' }));
+  }});
+  await api('/api/auth/google/start', { method: 'POST', body: {} });
+  assert.equal(options.headers['X-CSRF-Token'], undefined);
+  assert.equal(options.credentials, 'same-origin');
+});
+
+test('OAuth navigation only accepts the HTTPS Google accounts origin', () => {
+  assert.equal(typeof ui.googleAuthorizationUrl, 'function');
+  assert.equal(ui.googleAuthorizationUrl('https://accounts.google.com/o/oauth2/v2/auth?state=example'), 'https://accounts.google.com/o/oauth2/v2/auth?state=example');
+  for (const url of ['https://accounts.google.com.evil.example/auth', 'http://accounts.google.com/auth', 'javascript:alert(1)', '/login', 'https://user:pass@accounts.google.com/auth', null]) {
+    assert.throws(() => ui.googleAuthorizationUrl(url), /Google 登录暂时不可用/);
+  }
+});
+
+test('OAuth callback errors use fixed messages without reflecting query contents', () => {
+  assert.equal(typeof ui.googleLoginError, 'function');
+  assert.match(ui.googleLoginError('cancelled'), /取消/);
+  assert.match(ui.googleLoginError('capacity'), /成员上限/);
+  for (const code of ['failed', 'disabled', 'unavailable']) assert.equal(typeof ui.googleLoginError(code), 'string');
+  assert.equal(ui.googleLoginError('<script>token=secret</script>'), ui.googleLoginError('failed'));
+  assert.equal(ui.googleLoginError(null), '');
 });

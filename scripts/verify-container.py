@@ -11,6 +11,7 @@ identity = 'model-studio-check-' + uuid.uuid4().hex[:12]
 volume = identity + '-data'
 env = dict(os.environ, MASTER_KEY=secrets.token_hex(32), BOOTSTRAP_USERNAME='verify',
            BOOTSTRAP_PASSWORD=secrets.token_urlsafe(32), OPENAI_API_KEY=secrets.token_urlsafe(32),
+           GOOGLE_CLIENT_ID='fixture.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET=secrets.token_urlsafe(32),
            PUBLIC_ORIGIN='https://chatstd.awesome.guanghexinzhi.cn')
 
 def docker(*args, check=True):
@@ -21,7 +22,7 @@ def start():
            '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '128',
            '--memory', '512m', '--cpus', '1', '--ulimit', 'nofile=1024:1024', '--shm-size', '16m',
            '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=16777216,mode=1777', '--mount', f'type=volume,src={volume},dst=/data',
-           '-e', 'MASTER_KEY', '-e', 'BOOTSTRAP_USERNAME', '-e', 'BOOTSTRAP_PASSWORD', '-e', 'PUBLIC_ORIGIN', '-e', 'OPENAI_API_KEY', image)
+           '-e', 'MASTER_KEY', '-e', 'BOOTSTRAP_USERNAME', '-e', 'BOOTSTRAP_PASSWORD', '-e', 'PUBLIC_ORIGIN', '-e', 'OPENAI_API_KEY', '-e', 'GOOGLE_CLIENT_ID', '-e', 'GOOGLE_CLIENT_SECRET', image)
     for _ in range(30):
         result = subprocess.run(['docker', 'exec', identity, 'node', '-e', "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"], capture_output=True)
         if result.returncode == 0:
@@ -39,12 +40,14 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),{DatabaseSync}=
  r=await fetch(base+'/api/login',{method:'POST',headers:{Origin:'https://evil.example','Content-Type':'application/json'},body:'{}'});assert.equal(r.status,403);
  r=await fetch(base+'/api/login',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({username:'verify',password:process.env.BOOTSTRAP_PASSWORD})});assert.equal(r.status,200);
  assert.ok(r.headers.get('set-cookie').includes('Secure'));
+ assert.ok(r.headers.get('set-cookie').startsWith('__Host-studio_session='));
  const cookie=r.headers.get('set-cookie').split(';')[0],session=await r.json();
  const headers={Origin:origin,Cookie:cookie,'Content-Type':'application/json','X-CSRF-Token':session.csrfToken};
  let list=await (await fetch(base+'/api/conversations',{headers})).json();
  if(!list.conversations.length){
    r=await fetch(base+'/api/conversations',{method:'POST',headers,body:JSON.stringify({provider:'openai'})});assert.equal(r.status,201);
    r=await fetch(base+'/api/admin/providers/anthropic',{method:'PUT',headers,body:JSON.stringify({baseUrl:'https://api.anthropic.com/v1',model:'',enabled:false,protocol:'anthropic',apiKey:'disposable-fixture-key',maxOutputTokens:2048})});assert.equal(r.status,200);
+   r=await fetch(base+'/api/account/providers/gemini',{method:'PUT',headers,body:JSON.stringify({enabled:false,apiKey:'disposable-personal-fixture-key'})});assert.equal(r.status,200);
  }
  list=await (await fetch(base+'/api/conversations',{headers})).json();assert.equal(list.conversations.length,1);
  const providers=await (await fetch(base+'/api/admin/providers',{headers})).json();
@@ -55,8 +58,15 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),{DatabaseSync}=
  r=await fetch(base+'/api/admin/providers/openai',{method:'PUT',headers,body:JSON.stringify({baseUrl:managed.baseUrl,model:'',enabled:false,apiKey:'replacement-fixture-key'})});assert.equal(r.status,409);
  const db=new DatabaseSync('/data/studio.sqlite3',{readOnly:true});
  assert.equal(db.prepare('SELECT secret FROM providers WHERE id=?').get('openai').secret,'');db.close();
+ const personal=await (await fetch(base+'/api/account/providers',{headers})).json();
+ assert.equal(personal.providers.find(p=>p.id==='gemini').hasKey,true);
+ assert.ok(!JSON.stringify(personal).includes('disposable-personal-fixture-key'));
+ r=await fetch(base+'/api/auth/google/start',{method:'POST',headers,body:'{}'});assert.equal(r.status,200);
+ assert.ok(r.headers.get('set-cookie').startsWith('__Host-studio_google_flow='));
+ const authorization=await r.json();assert.equal(new URL(authorization.url).origin,'https://accounts.google.com');
+ assert.ok(!JSON.stringify(authorization).includes(process.env.GOOGLE_CLIENT_SECRET));
  r=await fetch(base+'/codex');assert.equal(r.status,200);assert.ok((await r.text()).includes('Model Studio'));
- console.log(JSON.stringify({uid:process.getuid(),readonly:true,health:true,anonymousDenied:true,foreignOriginDenied:true,secretNotReturned:true,environmentKeyManaged:true,secureCookie:true,conversationId:list.conversations[0].id,userId:session.user.id}));
+ console.log(JSON.stringify({uid:process.getuid(),readonly:true,health:true,anonymousDenied:true,foreignOriginDenied:true,secretNotReturned:true,environmentKeyManaged:true,personalKeyPersisted:true,googleStart:true,hostPrefixedCookie:true,secureCookie:true,conversationId:list.conversations[0].id,userId:session.user.id}));
 })().catch(()=>{console.error('Container acceptance assertion failed');process.exitCode=1;});
 """
 try:

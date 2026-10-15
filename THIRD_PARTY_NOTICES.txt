@@ -1,0 +1,8 @@
+jose 6.2.12
+Source: https://github.com/panva/jose
+Distribution: https://registry.npmjs.org/jose/-/jose-6.2.12.tgz
+Integrity: sha512-9NiFmJEex0sy2Dk58j2UGBSHgUs2ypF9eZSu4L6vjOX3Dp96Sw1F3uL+H+D1sx02jZZdzUT0HgvCy59CuvXcWw==
+License: MIT; see vendor/jose/LICENSE.md.
+The unmodified dist/webapi runtime and package.json are vendored so production
+builds do not need network access or npm install. The server uses jose to verify
+Google's signed ID tokens; no Google access/refresh tokens are persisted.

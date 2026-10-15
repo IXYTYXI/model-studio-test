@@ -19,6 +19,9 @@ services:
       BOOTSTRAP_USERNAME: "admin"
       DEFAULT_DAILY_LIMIT: "50"
       GLOBAL_DAILY_LIMIT: "500"
+      # Optional Google Web OAuth login: uncomment only with a real client ID
+      # and the GOOGLE_CLIENT_SECRET secretRef below. The ID is not a secret.
+      # GOOGLE_CLIENT_ID: "replace-with-real-web-client-id.apps.googleusercontent.com"
     secretRefs:
       MASTER_KEY: MASTER_KEY
       BOOTSTRAP_PASSWORD: BOOTSTRAP_PASSWORD
@@ -27,6 +30,8 @@ services:
       # OPENAI_API_KEY: OPENAI_API_KEY
       # ANTHROPIC_API_KEY: ANTHROPIC_API_KEY
       # GEMINI_API_KEY: GEMINI_API_KEY
+      # Optional; configure together with GOOGLE_CLIENT_ID above.
+      # GOOGLE_CLIENT_SECRET: GOOGLE_CLIENT_SECRET
     storage:
       name: studio
       mountPath: /data

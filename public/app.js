@@ -1,4 +1,4 @@
-import { createApi, splitContent } from './ui-lib.js';
+import { createApi, splitContent, googleAuthorizationUrl, googleLoginError } from './ui-lib.js';
 
 const $ = (id) => document.getElementById(id);
 const themes = {
@@ -22,7 +22,7 @@ const themes = {
   ] }
 };
 const routeProvider = () => Object.keys(themes).find(id => themes[id].route === location.pathname) || 'openai';
-const state = { session: null, provider: routeProvider(), activeId: null, conversations: [], messages: [], busy: false, loading: false, generation: 0, selections: {}, settingsTab: 'providers' };
+const state = { session: null, provider: routeProvider(), activeId: null, conversations: [], messages: [], busy: false, loading: false, generation: 0, selections: {}, settingsTab: 'personal', googleEnabled: false, loginPending: false };
 let toastTimer;
 const api = createApi({ getToken: () => state.session?.csrfToken || '', onUnauthorized: () => showLogin('登录已过期，请重新登录。') });
 
@@ -39,6 +39,21 @@ function button(label, className, action) {
   return node;
 }
 function showError(node, message = '') { node.textContent = message; node.hidden = !message; }
+function accountName(user) { return user.email || user.username; }
+function setLoginBusy(busy, google = false) {
+  state.loginPending = busy;
+  $('login-form').querySelector('button').disabled = busy;
+  $('google-login-button').disabled = busy;
+  $('google-login-label').textContent = busy && google ? '正在前往 Google…' : '使用 Google 账号登录';
+}
+async function loadAuthConfig() {
+  try {
+    const config = await api('/api/auth/config');
+    state.googleEnabled = config.google?.enabled === true;
+  } catch { state.googleEnabled = false; }
+  $('google-login-section').hidden = !state.googleEnabled;
+  $('login-description').textContent = state.googleEnabled ? '使用 Google 账号或已有的用户名和密码登录。' : '使用管理员为你创建的账号登录。';
+}
 function toast(message) {
   clearTimeout(toastTimer);
   $('toast').textContent = message;
@@ -57,6 +72,7 @@ function showLogin(message = '', success = false) {
   $('workspace').hidden = true;
   $('login-view').hidden = false;
   $('settings-dialog').close();
+  $('settings-content').replaceChildren();
   $('account-dialog').close();
   $('prompt').value = '';
   $('password').value = '';
@@ -70,11 +86,12 @@ async function enterWorkspace(session) {
   $('boot').hidden = true;
   $('login-view').hidden = true;
   $('workspace').hidden = false;
-  $('account-name').textContent = session.user.username;
-  $('account-avatar').textContent = session.user.username.slice(0, 1).toUpperCase();
+  $('account-name').textContent = accountName(session.user);
+  $('account-name').title = accountName(session.user);
+  $('account-avatar').textContent = accountName(session.user).slice(0, 1).toUpperCase();
   $('account-role').textContent = session.user.role === 'admin' ? '工作空间管理员' : '工作空间成员';
   $('settings-button').hidden = session.user.role !== 'admin';
-  $('top-settings').hidden = session.user.role !== 'admin';
+  $('top-settings').hidden = false;
   await selectProvider(routeProvider(), false);
 }
 function selectedProvider() { return state.session?.providers.find(provider => provider.id === state.provider); }
@@ -91,7 +108,7 @@ function updateHeader() {
   document.title = `${theme.name} · Model Studio`;
   $('workspace-label').textContent = theme.name;
   $('workspace-badge').textContent = theme.badge;
-  $('model-label').textContent = provider?.model || '未配置模型';
+  $('model-label').textContent = provider?.model ? `${provider.model} · ${provider.credentialSource === 'personal' ? '个人' : '平台'}` : '未配置模型';
   $('composer-model').textContent = provider?.model || `${theme.name} · 等待配置`;
   $('composer-symbol').textContent = theme.symbol;
   $('composer-caption').textContent = theme.caption;
@@ -102,8 +119,7 @@ function updateHeader() {
   if (!$('provider-notice').hidden) {
     const note = !provider?.enabled ? '此模型连接尚未启用。' : '此模型尚未完成连接配置。';
     $('provider-notice').append(document.createTextNode(note));
-    if (state.session.user.role === 'admin') $('provider-notice').append(button('前往设置', '', () => openSettings('providers')));
-    else $('provider-notice').append(document.createTextNode('请联系管理员。'));
+    $('provider-notice').append(button('设置个人 API Key', '', () => openSettings('personal')));
   }
   updateQuota();
   renderNav();
@@ -219,7 +235,7 @@ function newConversation() {
 }
 function renderWelcome() {
   const theme = themes[state.provider];
-  const heading = state.provider === 'gemini' ? `你好，${state.session?.user.username || '朋友'}。` : theme.title;
+  const heading = state.provider === 'gemini' ? `你好，${state.session ? accountName(state.session.user) : '朋友'}。` : theme.title;
   $('welcome').replaceChildren(el('div', 'welcome-heading-icon', theme.symbol), el('div', 'welcome-eyebrow', theme.eyebrow), el('h1', '', heading), el('p', 'welcome-description', theme.description));
   const cards = el('div', 'quick-prompts');
   for (const [symbol, title, description, prompt] of theme.prompts) {
@@ -241,7 +257,7 @@ function renderMessage(message) {
   const theme = themes[state.provider];
   const article = el('article', `message message-${message.role}`);
   const head = el('div', 'message-header');
-  head.append(el('span', 'message-avatar', message.role === 'user' ? state.session.user.username.slice(0, 1).toUpperCase() : theme.symbol), el('strong', '', message.role === 'user' ? '你' : theme.name));
+  head.append(el('span', 'message-avatar', message.role === 'user' ? accountName(state.session.user).slice(0, 1).toUpperCase() : theme.symbol), el('strong', '', message.role === 'user' ? '你' : theme.name));
   if (message.createdAt) {
     const date = new Date(message.createdAt);
     if (!Number.isNaN(date.getTime())) head.append(el('time', '', new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(date)));
@@ -389,23 +405,32 @@ function formFooter(label = '保存设置') {
   return footer;
 }
 async function openSettings(tab = state.settingsTab) {
-  if (state.session?.user.role !== 'admin') return;
+  if (!state.session) return;
+  const admin = state.session.user.role === 'admin';
+  if (!admin) tab = 'personal';
   state.settingsTab = tab;
   if (!$('settings-dialog').open) $('settings-dialog').showModal();
+  $('settings-title').textContent = tab === 'personal' ? '个人模型设置' : '管理工作空间';
+  $('tab-personal').classList.toggle('active', tab === 'personal');
+  $('tab-providers').hidden = !admin;
+  $('tab-users').hidden = !admin;
   $('tab-providers').classList.toggle('active', tab === 'providers');
   $('tab-users').classList.toggle('active', tab === 'users');
   $('settings-content').replaceChildren(el('p', 'loading-state', '正在加载设置…'));
   try {
-    const result = await api(`/api/admin/${tab}`);
+    const result = await api(tab === 'personal' ? '/api/account/providers' : `/api/admin/${tab}`);
     if (!state.session || state.settingsTab !== tab || !$('settings-dialog').open) return;
-    if (tab === 'providers') renderProviderSettings(result.providers);
+    if (tab === 'personal') renderProviderSettings(result.providers, true, result.allowSharedKeys);
+    else if (tab === 'providers') renderProviderSettings(result.providers);
     else renderUsers(result.users);
   } catch (error) {
     if (state.session) $('settings-content').replaceChildren(el('p', 'error-state', error.message), button('重试', 'secondary-button', () => openSettings(tab)));
   }
 }
-function renderProviderSettings(providers) {
-  $('settings-content').replaceChildren(el('p', 'settings-intro', '连接自己的模型服务。由平台管理的 API Key 需通过平台秘密配置更新；API 地址、模型和启用状态仍可在此修改。其他 API Key 保存后不会回显，留空保留已有密钥。请填写服务商提供的 HTTPS API 基础地址与模型名称。'));
+function renderProviderSettings(providers, personal = false, allowShared = false) {
+  $('settings-content').replaceChildren(el('p', 'settings-intro', personal
+    ? `这里的 API Key 和模型设置仅供你的账号使用。密钥加密保存，保存后不会回显，留空保留已有值；更改 API 地址须重新填写 Key。调用失败或删除密钥都不会自动切换到平台 Key。${allowShared ? '你已获授权，可主动选择平台连接，使用平台额度。' : '需要使用平台连接时，请联系管理员单独授权。'} 自有 Key 同样受本站请求额度限制。`
+    : '配置平台提供的模型连接。仅管理员和已获授权的成员可使用。由平台管理的 API Key 需通过平台秘密配置更新；API 地址、模型和启用状态仍可在此修改。其他 API Key 保存后不会回显，留空保留已有密钥。'));
   for (const provider of providers) {
     const form = el('form', 'provider-settings-card');
     const heading = el('div', 'provider-settings-heading');
@@ -419,6 +444,7 @@ function renderProviderSettings(providers) {
     const keyHint = el('p', 'field-hint', '通过平台秘密配置更新');
     keyField.append(keyHint);
     let keySource;
+    const sourceNote = el('p', 'field-hint');
     function updateKeyState(config) {
       keySource = config.keySource || (config.hasKey ? 'stored' : 'none');
       const managed = keySource === 'environment';
@@ -427,10 +453,31 @@ function renderProviderSettings(providers) {
       keyInput.placeholder = managed ? '由平台管理' : config.hasKey ? '已保存 · 留空保留' : '输入 API Key';
       keyHint.hidden = !managed;
       title.querySelector('.key-status').textContent = managed ? '由平台管理' : config.hasKey ? '密钥已保存' : '尚无密钥';
+      if (personal) sourceNote.textContent = config.source === 'shared'
+        ? (allowShared ? '当前使用：平台连接。保存以下设置将切换为个人连接。' : '平台连接未获授权，请填写并保存个人连接。')
+        : `当前使用：个人连接${config.enabled ? '' : '（尚未启用）'}`;
     }
     updateKeyState(provider);
     grid.append(field('API 基础地址', 'baseUrl', { value: provider.baseUrl, type: 'url', placeholder: 'https://api.example.com/v1', wide: true }), field('模型名称', 'model', { value: provider.model, placeholder: '填写服务商提供的模型 ID' }), field('接口协议', 'protocol', { value: provider.protocol, options: protocols }), keyField, field('最大输出 Token', 'maxOutputTokens', { value: String(provider.maxOutputTokens), type: 'number', min: 128, max: 4096, required: true }));
-    form.append(heading, grid, formFooter());
+    const footer = formFooter(personal ? '保存并使用个人连接' : '保存设置');
+    if (personal) {
+      const remove = button('删除个人密钥', 'danger-button', () => {
+        if (!confirm('删除这个模型的个人 API Key 并停用个人连接？之后需重新填写 Key 才能恢复。')) return;
+        formRequest(form, async () => {
+          await api(`/api/account/providers/${provider.id}`, {method: 'DELETE'});
+          state.session = await api('/api/session'); updateHeader(); await openSettings('personal');
+          toast('个人密钥已删除，个人连接已停用');
+        });
+      });
+      footer.append(remove);
+      if (allowShared) footer.append(button('使用平台连接', 'secondary-button', () => formRequest(form, async () => {
+        await api(`/api/account/providers/${provider.id}`, {method: 'PUT', body: {source: 'shared'}});
+        state.session = await api('/api/session'); updateHeader(); await openSettings('personal'); toast('已切换为平台连接');
+      })));
+    }
+    form.append(heading);
+    if (personal) form.append(sourceNote);
+    form.append(grid, footer);
     form.addEventListener('submit', event => {
       event.preventDefault();
       formRequest(form, async () => {
@@ -438,7 +485,7 @@ function renderProviderSettings(providers) {
         const payload = { baseUrl: data.get('baseUrl').trim(), model: data.get('model').trim(), protocol: data.get('protocol'), maxOutputTokens: Number(data.get('maxOutputTokens')), enabled: data.has('enabled') };
         const apiKey = data.get('apiKey');
         if (keySource !== 'environment' && typeof apiKey === 'string' && apiKey.trim()) payload.apiKey = apiKey.trim();
-        const result = await api(`/api/admin/providers/${provider.id}`, { method: 'PUT', body: payload });
+        const result = await api(`/api/${personal ? 'account' : 'admin'}/providers/${provider.id}`, { method: 'PUT', body: payload });
         updateKeyState(result.provider);
         state.session = await api('/api/session');
         updateHeader();
@@ -448,16 +495,16 @@ function renderProviderSettings(providers) {
   }
 }
 function renderUsers(users) {
-  const intro = el('p', 'settings-intro', '只有管理员可以创建账号。每日额度按调用尝试次数计算（包括上游失败）；暂停账号后，该成员将无法继续访问。');
+  const intro = el('p', 'settings-intro', '新成员默认使用个人 API Key。仅对你同意承担模型费用的成员开启「允许使用平台连接」。启用 Google 登录时，首次登录自动创建普通成员。个人与平台调用均受每日额度限制（包括上游失败）；暂停账号后无法继续访问。');
   const create = el('form', 'user-create');
   const grid = el('div', 'fields-grid');
-  grid.append(field('用户名', 'username', { required: true, placeholder: '如 team-member', autocomplete: 'off', hint: '2–64 位字母、数字或 . _ @ -' }), field('初始密码', 'password', { type: 'password', required: true, min: 14, max: 128, placeholder: '14–128 个字符', autocomplete: 'new-password' }), field('每日请求额度', 'dailyLimit', { type: 'number', min: 1, max: 10000, value: '100', required: true }));
-  create.append(el('h3', '', '邀请新成员'), grid, formFooter('创建成员账号'));
+  grid.append(field('用户名', 'username', { required: true, placeholder: '如 team-member', autocomplete: 'off', hint: '2–64 位字母、数字或 . _ @ -' }), field('初始密码', 'password', { type: 'password', required: true, min: 14, max: 128, placeholder: '14–128 个字符', autocomplete: 'new-password' }), field('每日请求额度', 'dailyLimit', { type: 'number', min: 1, max: 10000, value: '50', required: true }));
+  create.append(el('h3', '', '邀请新成员'), grid, toggle('允许使用平台连接（消耗平台 Key）', 'allowSharedKeys', false), formFooter('创建成员账号'));
   create.addEventListener('submit', event => {
     event.preventDefault();
     formRequest(create, async () => {
       const data = new FormData(create);
-      await api('/api/admin/users', { method: 'POST', body: { username: data.get('username').trim(), password: data.get('password'), dailyLimit: Number(data.get('dailyLimit')) } });
+      await api('/api/admin/users', { method: 'POST', body: { username: data.get('username').trim(), password: data.get('password'), dailyLimit: Number(data.get('dailyLimit')), allowSharedKeys: data.has('allowSharedKeys') } });
       create.reset();
       toast('成员账号已创建');
       await openSettings('users');
@@ -470,21 +517,30 @@ function renderUsers(users) {
     const form = el('form', 'user-row');
     const heading = el('div', 'user-row-head');
     const isSelf = user.id === state.session.user.id;
-    heading.append(el('strong', '', user.username), el('span', 'role-tag', user.role === 'admin' ? '管理员' : '成员'), toggle(isSelf ? '当前账号' : '启用账号', 'enabled', user.enabled, isSelf));
+    const identity = el('div', 'user-identity');
+    identity.append(el('strong', '', accountName(user)));
+    if (user.email) identity.append(el('small', '', `用户名：${user.username}`));
+    heading.append(identity, el('span', 'role-tag', user.role === 'admin' ? '管理员' : '成员'), toggle(isSelf ? '当前账号' : '启用账号', 'enabled', user.enabled, isSelf));
     const grid = el('div', 'fields-grid');
-    grid.append(field('每日请求额度', 'dailyLimit', { type: 'number', value: String(user.dailyLimit), min: 1, max: 10000, required: true }), field('重置密码', 'password', { type: 'password', min: 14, max: 128, placeholder: '留空保持当前密码', autocomplete: 'new-password' }));
+    const passwordField = field(user.passwordEnabled === false ? '设置本地密码（可选）' : '重置密码', 'password', { type: 'password', min: 14, max: 128, placeholder: user.passwordEnabled === false ? '留空继续仅使用 Google 登录' : '留空保持当前密码', autocomplete: 'new-password' });
+    grid.append(field('每日请求额度', 'dailyLimit', { type: 'number', value: String(user.dailyLimit), min: 1, max: 10000, required: true }), passwordField);
     const footer = formFooter('保存成员');
     footer.append(el('span', 'usage-note', `今日已用 ${user.used} 次`));
-    form.append(heading, grid, footer);
+    form.append(heading, grid, toggle('允许使用平台连接（消耗平台 Key）', 'allowSharedKeys', user.allowSharedKeys, user.role === 'admin'), footer);
     form.addEventListener('submit', event => {
       event.preventDefault();
       formRequest(form, async () => {
         const data = new FormData(form);
         const payload = { dailyLimit: Number(data.get('dailyLimit')) };
+        if (user.role !== 'admin') payload.allowSharedKeys = data.has('allowSharedKeys');
         if (!isSelf) payload.enabled = data.has('enabled');
         if (data.get('password')) payload.password = data.get('password');
-        await api(`/api/admin/users/${encodeURIComponent(user.id)}`, { method: 'PATCH', body: payload });
+        const result = await api(`/api/admin/users/${encodeURIComponent(user.id)}`, { method: 'PATCH', body: payload });
         form.elements.password.value = '';
+        if (result.user.passwordEnabled !== false) {
+          passwordField.querySelector('label').textContent = '重置密码';
+          form.elements.password.placeholder = '留空保持当前密码';
+        }
         if (isSelf && payload.password) { showLogin('密码已更新，请重新登录。', true); return; }
         if (isSelf) { state.session = await api('/api/session'); updateQuota(); }
       });
@@ -496,15 +552,27 @@ function renderUsers(users) {
 
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault();
-  const submit = $('login-form').querySelector('button');
-  submit.disabled = true;
+  if (state.loginPending) return;
+  setLoginBusy(true);
+  $('login-error').classList.remove('login-success');
   showError($('login-error'));
   try {
     const session = await api('/api/login', { method: 'POST', body: { username: $('username').value.trim(), password: $('password').value } });
     $('password').value = '';
     await enterWorkspace(session);
   } catch (error) { showError($('login-error'), error.message); }
-  finally { submit.disabled = false; }
+  finally { setLoginBusy(false); }
+});
+$('google-login-button').addEventListener('click', async () => {
+  if (!state.googleEnabled || state.loginPending) return;
+  setLoginBusy(true, true);
+  $('login-error').classList.remove('login-success');
+  showError($('login-error'));
+  try {
+    const result = await api('/api/auth/google/start', { method: 'POST', body: {} });
+    location.assign(googleAuthorizationUrl(result.url));
+  } catch (error) { showError($('login-error'), error.message); }
+  finally { setLoginBusy(false); }
 });
 $('chat-form').addEventListener('submit', sendChat);
 $('prompt').addEventListener('input', updateControls);
@@ -513,21 +581,35 @@ $('new-chat').addEventListener('click', newConversation);
 $('brand-home').addEventListener('click', event => { event.preventDefault(); if (!state.busy) selectProvider('openai').catch(reportChatError); });
 $('mobile-menu').addEventListener('click', () => { $('sidebar').classList.add('open'); $('sidebar-backdrop').hidden = false; });
 $('sidebar-backdrop').addEventListener('click', closeSidebar);
-$('settings-button').addEventListener('click', () => openSettings());
-$('top-settings').addEventListener('click', () => openSettings('providers'));
+$('settings-button').addEventListener('click', () => openSettings('providers'));
+$('personal-settings-button').addEventListener('click', () => openSettings('personal'));
+$('top-settings').addEventListener('click', () => openSettings('personal'));
 $('close-settings').addEventListener('click', () => $('settings-dialog').close());
 $('tab-providers').addEventListener('click', () => openSettings('providers'));
+$('tab-personal').addEventListener('click', () => openSettings('personal'));
 $('tab-users').addEventListener('click', () => openSettings('users'));
-$('account-button').addEventListener('click', () => { $('password-form').reset(); showError($('password-error')); $('account-dialog').showModal(); });
+$('account-button').addEventListener('click', () => {
+  const user = state.session.user;
+  const passwordEnabled = user.passwordEnabled !== false;
+  $('password-form').reset();
+  $('password-form').hidden = !passwordEnabled;
+  $('google-account-note').hidden = passwordEnabled;
+  $('account-display-name').textContent = accountName(user);
+  $('account-login-name').textContent = `${passwordEnabled ? '本地登录用户名' : '账号标识'}：${user.username}`;
+  showError($('password-error'));
+  showError($('account-error'));
+  $('account-dialog').showModal();
+});
 $('close-account').addEventListener('click', () => $('account-dialog').close());
 $('logout-button').addEventListener('click', async () => {
   $('logout-button').disabled = true;
   try { await api('/api/logout', { method: 'POST', body: {} }); showLogin(); }
-  catch (error) { if (state.session) showError($('password-error'), error.message); }
+  catch (error) { if (state.session) showError($('account-error'), error.message); }
   finally { $('logout-button').disabled = false; }
 });
 $('password-form').addEventListener('submit', async event => {
   event.preventDefault();
+  if (state.session?.user.passwordEnabled === false) return;
   const submit = $('password-form').querySelector('[type="submit"]');
   submit.disabled = true;
   showError($('password-error'));
@@ -542,5 +624,10 @@ window.addEventListener('popstate', () => {
 });
 document.addEventListener('keydown', event => { if (event.key === 'Escape') closeSidebar(); });
 
+const loginQuery = new URLSearchParams(location.search);
+const callbackError = googleLoginError(loginQuery.get('google_error'));
+if (loginQuery.has('google_error')) history.replaceState({}, '', location.pathname);
+const authConfigReady = loadAuthConfig();
 try { await enterWorkspace(await api('/api/session')); }
-catch (error) { showLogin(error.status === 401 ? '' : error.message); }
+catch (error) { showLogin(callbackError || (error.status === 401 ? '' : error.message)); }
+await authConfigReady;

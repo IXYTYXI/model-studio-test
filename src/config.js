@@ -23,7 +23,13 @@ export function readConfig(env=process.env) {
     if(typeof value!=='string'||!/^[\x21-\x7e]{1,8192}$/.test(value))throw new Error('Invalid provider API key setting');
     providerKeys[id]=value;
   }
-  return {masterKey:Buffer.from(raw,'hex'),publicOrigin:publicOrigin.origin,allowedHosts,providerKeys,
+  const googleId=env.GOOGLE_CLIENT_ID,googleSecret=secret(env,'GOOGLE_CLIENT_SECRET');
+  let google=null;
+  if(googleId||googleSecret) {
+    if(typeof googleId!=='string'||!/^[A-Za-z0-9_-]{1,200}\.apps\.googleusercontent\.com$/.test(googleId)||typeof googleSecret!=='string'||!/^[\x21-\x7e]{1,4096}$/.test(googleSecret))throw new Error('Google login requires a valid client ID and client secret');
+    google={clientId:googleId,clientSecret:googleSecret,redirectUri:publicOrigin.origin+'/api/auth/google/callback'};
+  }
+  return {masterKey:Buffer.from(raw,'hex'),publicOrigin:publicOrigin.origin,allowedHosts,providerKeys,google,
     dataDir:resolve(env.DATA_DIR||'data'),bootstrapUsername,bootstrapPassword:secret(env,'BOOTSTRAP_PASSWORD'),
     port:integer(env.PORT,8080,1,65535),host:env.HOST||'0.0.0.0',
     defaultDailyLimit:integer(env.DEFAULT_DAILY_LIMIT,50,1,10000),globalDailyLimit:integer(env.GLOBAL_DAILY_LIMIT,500,1,100000)};

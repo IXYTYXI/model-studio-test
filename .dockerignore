@@ -3,6 +3,8 @@
 !package.json
 !src/
 !src/**
+!vendor/
+!vendor/**
 !public/
 !public/**
 public/*.test.mjs

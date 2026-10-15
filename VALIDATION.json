@@ -2,31 +2,51 @@
   "version": "1.0.0",
   "verifiedOn": "2026-10-15",
   "runtime": "Node.js 24.13.0",
-  "automatedTests": { "passed": 56, "failed": 0, "command": "npm test" },
+  "automatedTests": {
+    "passed": 134,
+    "failed": 0,
+    "command": "npm test"
+  },
   "docker": {
     "offlineBuild": "passed with --network=none",
-    "imageTag": "model-studio:verify-20261015",
-    "imageDigest": "sha256:0a2d9b20184e28ef9ee6ee43b2168d9b1d8c53140b043c1f24f20a86a27ddbb6",
+    "imageTag": "model-studio:google-personal-20261015",
+    "imageDigest": "sha256:ed54c67feefd93c877425f73df1256790cbbeea6749234a9b19e6a63858a9bce",
     "environment": "Docker Desktop Linux arm64",
     "nonRootUid": 65532,
     "readonlyRoot": true,
     "restartPersistence": "passed",
     "healthAndAccessControls": "passed",
     "environmentKeyAndSecureCookie": "passed; fixture key not returned or persisted",
-    "testNetwork": "none"
+    "testNetwork": "none",
+    "googleStartAndHostCookies": "passed with fixture OAuth config; no Google calls",
+    "personalKeyPersistence": "passed across container recreate"
   },
   "browser": {
     "login": "passed",
     "threeLayoutsAndSettings": "passed",
     "originalLayoutsVerifiedOn": "2026-10-14",
     "environmentKeySettings": "2026-10-15: managed key input disabled; other settings saved successfully",
-    "mobileViewport": "390x844; no horizontal overflow",
-    "consoleErrors": 0
+    "mobileViewport": "390x844; personal settings and page have no horizontal overflow",
+    "consoleErrors": 0,
+    "personalKeySettings": "2026-10-15: ordinary member saved a fixture personal key, input cleared, local mock conversation succeeded",
+    "googleLoginEntry": "visible with fixture configuration; real OAuth not attempted"
   },
   "notVerified": [
     "Real paid model API calls; no real API keys were supplied",
     "Public deployment, domain and production TLS",
     "Production rootless Docker host or amd64 runtime",
-    "Live Awesome Deploy preflight, domain availability, secret ownership and public-https-v1 policy; local configuration checks are in PLATFORM-VALIDATION.json"
-  ]
+    "Live Awesome Deploy preflight, domain availability, secret ownership and public-https-v1 policy; local configuration checks are in PLATFORM-VALIDATION.json",
+    "Real Google OAuth consent/code exchange with operator-owned Client ID/Secret and production callback"
+  ],
+  "googleLogin": {
+    "registration": "all verified Google accounts become members, with shared platform key access disabled by default",
+    "identityVerification": "offline RSA signature, issuer, audience, nonce, expiration, PKCE, state and browser binding tests passed",
+    "dependencies": "jose 6.2.12 unmodified vendored runtime verified against npm tarball SHA-512"
+  },
+  "personalKeys": {
+    "isolation": "per user and provider; AES-256-GCM authenticated encryption",
+    "fallback": "never automatic after personal failure, disable or deletion",
+    "sharedAccess": "new members require admin grant; legacy member permission retained on upgrade",
+    "upgrade": "legacy users and conversations retained; revoked shared permission survives restart"
+  }
 }
