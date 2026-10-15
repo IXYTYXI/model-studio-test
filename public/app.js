@@ -405,27 +405,41 @@ async function openSettings(tab = state.settingsTab) {
   }
 }
 function renderProviderSettings(providers) {
-  $('settings-content').replaceChildren(el('p', 'settings-intro', '连接自己的模型服务。API Key 保存后不会回显；留空保留已有密钥。请填写服务商提供的 HTTPS API 基础地址与模型名称。'));
+  $('settings-content').replaceChildren(el('p', 'settings-intro', '连接自己的模型服务。由平台管理的 API Key 需通过平台秘密配置更新；API 地址、模型和启用状态仍可在此修改。其他 API Key 保存后不会回显，留空保留已有密钥。请填写服务商提供的 HTTPS API 基础地址与模型名称。'));
   for (const provider of providers) {
     const form = el('form', 'provider-settings-card');
     const heading = el('div', 'provider-settings-heading');
     const title = el('h3', '', `${themes[provider.id].symbol}  ${themes[provider.id].name}`);
-    title.append(el('span', 'key-status', provider.hasKey ? '密钥已保存' : '尚无密钥'));
+    title.append(el('span', 'key-status'));
     heading.append(title, toggle('启用连接', 'enabled', provider.enabled));
     const grid = el('div', 'fields-grid');
     const protocols = provider.id === 'openai' ? [['openai-responses', 'OpenAI Responses'], ['openai-chat', 'OpenAI Chat Completions']] : [[provider.id, provider.id === 'anthropic' ? 'Anthropic Messages' : 'Gemini Generate Content']];
-    grid.append(field('API 基础地址', 'baseUrl', { value: provider.baseUrl, type: 'url', placeholder: 'https://api.example.com/v1', wide: true }), field('模型名称', 'model', { value: provider.model, placeholder: '填写服务商提供的模型 ID' }), field('接口协议', 'protocol', { value: provider.protocol, options: protocols }), field('API Key', 'apiKey', { type: 'password', placeholder: provider.hasKey ? '已保存 · 留空保留' : '输入 API Key', autocomplete: 'new-password' }), field('最大输出 Token', 'maxOutputTokens', { value: String(provider.maxOutputTokens), type: 'number', min: 128, max: 4096, required: true }));
+    const keyField = field('API Key', 'apiKey', { type: 'password', autocomplete: 'new-password' });
+    const keyInput = keyField.querySelector('input');
+    const keyHint = el('p', 'field-hint', '通过平台秘密配置更新');
+    keyField.append(keyHint);
+    let keySource;
+    function updateKeyState(config) {
+      keySource = config.keySource || (config.hasKey ? 'stored' : 'none');
+      const managed = keySource === 'environment';
+      keyInput.value = '';
+      keyInput.disabled = managed;
+      keyInput.placeholder = managed ? '由平台管理' : config.hasKey ? '已保存 · 留空保留' : '输入 API Key';
+      keyHint.hidden = !managed;
+      title.querySelector('.key-status').textContent = managed ? '由平台管理' : config.hasKey ? '密钥已保存' : '尚无密钥';
+    }
+    updateKeyState(provider);
+    grid.append(field('API 基础地址', 'baseUrl', { value: provider.baseUrl, type: 'url', placeholder: 'https://api.example.com/v1', wide: true }), field('模型名称', 'model', { value: provider.model, placeholder: '填写服务商提供的模型 ID' }), field('接口协议', 'protocol', { value: provider.protocol, options: protocols }), keyField, field('最大输出 Token', 'maxOutputTokens', { value: String(provider.maxOutputTokens), type: 'number', min: 128, max: 4096, required: true }));
     form.append(heading, grid, formFooter());
     form.addEventListener('submit', event => {
       event.preventDefault();
       formRequest(form, async () => {
         const data = new FormData(form);
         const payload = { baseUrl: data.get('baseUrl').trim(), model: data.get('model').trim(), protocol: data.get('protocol'), maxOutputTokens: Number(data.get('maxOutputTokens')), enabled: data.has('enabled') };
-        if (data.get('apiKey').trim()) payload.apiKey = data.get('apiKey').trim();
+        const apiKey = data.get('apiKey');
+        if (keySource !== 'environment' && typeof apiKey === 'string' && apiKey.trim()) payload.apiKey = apiKey.trim();
         const result = await api(`/api/admin/providers/${provider.id}`, { method: 'PUT', body: payload });
-        form.elements.apiKey.value = '';
-        form.elements.apiKey.placeholder = result.provider.hasKey ? '已保存 · 留空保留' : '输入 API Key';
-        title.querySelector('.key-status').textContent = result.provider.hasKey ? '密钥已保存' : '尚无密钥';
+        updateKeyState(result.provider);
         state.session = await api('/api/session');
         updateHeader();
       });

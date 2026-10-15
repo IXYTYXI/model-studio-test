@@ -1,22 +1,25 @@
 {
   "version": "1.0.0",
-  "verifiedOn": "2026-10-14",
+  "verifiedOn": "2026-10-15",
   "runtime": "Node.js 24.13.0",
-  "automatedTests": { "passed": 50, "failed": 0, "command": "npm test" },
+  "automatedTests": { "passed": 56, "failed": 0, "command": "npm test" },
   "docker": {
     "offlineBuild": "passed with --network=none",
-    "imageTag": "model-studio:verify-20261014",
-    "imageDigest": "sha256:0eb22dbd615ca390e3c1b5848d6413fda922d92f07425d4f83b8c37d6ca394a6",
+    "imageTag": "model-studio:verify-20261015",
+    "imageDigest": "sha256:0a2d9b20184e28ef9ee6ee43b2168d9b1d8c53140b043c1f24f20a86a27ddbb6",
     "environment": "Docker Desktop Linux arm64",
     "nonRootUid": 65532,
     "readonlyRoot": true,
     "restartPersistence": "passed",
     "healthAndAccessControls": "passed",
+    "environmentKeyAndSecureCookie": "passed; fixture key not returned or persisted",
     "testNetwork": "none"
   },
   "browser": {
     "login": "passed",
     "threeLayoutsAndSettings": "passed",
+    "originalLayoutsVerifiedOn": "2026-10-14",
+    "environmentKeySettings": "2026-10-15: managed key input disabled; other settings saved successfully",
     "mobileViewport": "390x844; no horizontal overflow",
     "consoleErrors": 0
   },
@@ -24,6 +27,6 @@
     "Real paid model API calls; no real API keys were supplied",
     "Public deployment, domain and production TLS",
     "Production rootless Docker host or amd64 runtime",
-    "Awesome Deploy compatibility: current internal networks block external model APIs"
+    "Live Awesome Deploy preflight, domain availability, secret ownership and public-https-v1 policy; local configuration checks are in PLATFORM-VALIDATION.json"
   ]
 }

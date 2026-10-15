@@ -16,7 +16,14 @@ export function readConfig(env=process.env) {
   }
   const bootstrapUsername=(env.BOOTSTRAP_USERNAME||'admin').toLowerCase();
   if(!/^[a-z0-9][a-z0-9_.@-]{1,63}$/.test(bootstrapUsername))throw new Error('Invalid BOOTSTRAP_USERNAME');
-  return {masterKey:Buffer.from(raw,'hex'),publicOrigin:publicOrigin.origin,allowedHosts,
+  const providerKeys={};
+  for(const [id,name] of [['openai','OPENAI_API_KEY'],['anthropic','ANTHROPIC_API_KEY'],['gemini','GEMINI_API_KEY']]) {
+    const value=env[name];
+    if(value===undefined||value==='')continue;
+    if(typeof value!=='string'||!/^[\x21-\x7e]{1,8192}$/.test(value))throw new Error('Invalid provider API key setting');
+    providerKeys[id]=value;
+  }
+  return {masterKey:Buffer.from(raw,'hex'),publicOrigin:publicOrigin.origin,allowedHosts,providerKeys,
     dataDir:resolve(env.DATA_DIR||'data'),bootstrapUsername,bootstrapPassword:secret(env,'BOOTSTRAP_PASSWORD'),
     port:integer(env.PORT,8080,1,65535),host:env.HOST||'0.0.0.0',
     defaultDailyLimit:integer(env.DEFAULT_DAILY_LIMIT,50,1,10000),globalDailyLimit:integer(env.GLOBAL_DAILY_LIMIT,500,1,100000)};

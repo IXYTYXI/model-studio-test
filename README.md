@@ -38,7 +38,9 @@ docker compose up -d
 
 构建不下载依赖，固定的基础镜像需预先缓存。公网部署需要 HTTPS 反向代理，并将 `PUBLIC_ORIGIN` 设置为实际访问的 HTTPS origin；默认宿主机只绑定 `127.0.0.1:8080`。
 
-现有 Awesome Deploy 0.4.1 的内部网络会阻断外部模型 API。`awesome.blocked.yaml` 是限制说明，不能作为部署清单使用。
+Awesome Deploy 0.5.0 使用仓库根目录的 [awesome.yaml](awesome.yaml)，应用前缀为 `chatstd`。管理员须启用 `public-https-v1` 并准备清单引用的业务秘密。模型 Key 可通过 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GEMINI_API_KEY` 注入；在清单中仅启用自己已准备好 Key 的供应商引用。环境 Key 优先，页面只显示“由平台管理”，不会返回密钥值。
+
+平台不会读取 Compose 或本地 `.env` 来替代部署清单。当前尚未完成线上预检、域名占用检查和真实模型调用，配置文件不代表已上线。
 
 详细步骤见 [使用说明](README.txt) 和 [部署、配置及备份说明](DEPLOYMENT.txt)。
 
@@ -48,4 +50,4 @@ docker compose up -d
 npm test
 ```
 
-目前 50 项测试通过；已验证离线镜像构建、容器访问控制与重建后的持久化。具体范围见 [VALIDATION.json](VALIDATION.json)。尚未进行真实付费模型调用或公网部署验收。
+目前 56 项测试通过；已验证离线镜像构建、容器访问控制、环境密钥管理与重建后的持久化。具体范围见 [VALIDATION.json](VALIDATION.json)，平台清单静态校验见 [PLATFORM-VALIDATION.json](PLATFORM-VALIDATION.json)。尚未进行真实付费模型调用或公网部署验收。

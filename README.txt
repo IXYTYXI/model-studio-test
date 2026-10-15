@@ -15,10 +15,10 @@ setup 为兼容 Node 与 Docker Compose 的 .env 读取，使用单引号保存�
 没有开放注册。管理员创建成员，配置其每日请求次数，或禁用账号。按 Asia/Shanghai 的日历日统计；已扣额的请求即使模型调用失败也消耗额度。账号额度与全站额度都限制请求次数，不是费用或 token 上限。请同时在模型供应商后台设置消费限制。
 
 安全与功能边界
-API key 仅保存在服务器，使用 AES-256-GCM 加密。密码使用 scrypt。服务使用服务器会话、同源检查和 CSRF 防护。客户端不会拿到已存储的 API key。
+管理页保存的 API key 仅保存在服务器，使用 AES-256-GCM 加密。也支持 OPENAI_API_KEY、ANTHROPIC_API_KEY、GEMINI_API_KEY 环境变量；平台可通过 secretRefs 注入。环境 Key 优先、不写入数据库，页面显示“由平台管理”并禁止修改该密钥。移除环境 Key 后恢复原数据库 Key（如有）。密码使用 scrypt。服务使用服务器会话、同源检查和 CSRF 防护。客户端不会拿到已存储或平台注入的 API key。
 默认允许 api.openai.com、api.anthropic.com 和 generativelanguage.googleapis.com。自定义兼容服务须添加精确 DNS 主机名到 ALLOWED_API_HOSTS，并重启；只支持可公开解析的 HTTPS 目标，不允许私网、IP 直连、重定向或通配符。
 此版本是文本对话，不执行终端命令、不读取代码仓库，不是 Codex 终端代理；也不包含联网搜索、图片/文件输入或流式返回。
 
 部署与验证
-Docker、HTTPS、数据备份、密钥恢复及 Awesome Deploy 的已知阻塞见 DEPLOYMENT.txt。
+Docker、HTTPS、数据备份、密钥恢复及 Awesome Deploy 0.5.0 的接入步骤见 DEPLOYMENT.txt。平台清单为根目录 awesome.yaml，用户指定前缀 chatstd；平台须启用 public-https-v1，并通过 secretRefs 注入实际使用的业务秘密。
 本交付不代表已在公网发布。未配置真实供应商 API key，未验证付费模型调用。自动化测试不能替代部署后使用自有 key 的验收。

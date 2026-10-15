@@ -1,0 +1,47 @@
+schemaVersion: 1
+app:
+  name: Chat Studio
+  description: 多模型文本对话、账号管理与服务端模型 API 调用
+  subdomain: chatstd
+services:
+  web:
+    kind: web
+    build:
+      context: .
+      dockerfile: Dockerfile
+    port: 8080
+    env:
+      NODE_ENV: "production"
+      HOST: "0.0.0.0"
+      PORT: "8080"
+      DATA_DIR: "/data"
+      PUBLIC_ORIGIN: "https://chatstd.awesome.guanghexinzhi.cn"
+      BOOTSTRAP_USERNAME: "admin"
+      DEFAULT_DAILY_LIMIT: "50"
+      GLOBAL_DAILY_LIMIT: "500"
+    secretRefs:
+      MASTER_KEY: MASTER_KEY
+      BOOTSTRAP_PASSWORD: BOOTSTRAP_PASSWORD
+      # Uncomment only the providers whose real business keys the operator has configured.
+      # Keep unavailable providers disabled in the application settings.
+      # OPENAI_API_KEY: OPENAI_API_KEY
+      # ANTHROPIC_API_KEY: ANTHROPIC_API_KEY
+      # GEMINI_API_KEY: GEMINI_API_KEY
+    storage:
+      name: studio
+      mountPath: /data
+    resources:
+      cpu: 1
+      memoryMiB: 512
+    healthcheck:
+      type: http
+      path: /healthz
+      intervalSeconds: 10
+      timeoutSeconds: 3
+      retries: 3
+      startPeriodSeconds: 30
+routes:
+  - path: /
+    match: prefix
+    service: web
+    stripPrefix: false

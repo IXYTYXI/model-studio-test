@@ -1,0 +1,28 @@
+{
+  "checkedOn": "2026-10-15",
+  "protocol": "v1.1",
+  "platformVersion": "0.5.0",
+  "platformSourceCommit": "5bf511306cc1031c7b1fadd814201265cf121b88",
+  "repository": "https://github.com/IXYTYXI/model-studio-test.git",
+  "ref": "codex/model-studio",
+  "subdomain": "chatstd",
+  "expectedOrigin": "https://chatstd.awesome.guanghexinzhi.cn",
+  "checks": {
+    "manifestSchemaAndSemantics": "passed",
+    "optionalProviderSecretReferences": "passed",
+    "strictSecretNames": "passed",
+    "repositoryAndRef": "passed",
+    "dockerfileSupportedSyntax": "passed; no registry pull performed by this static check",
+    "gatewayRoutesAndRendering": "passed; synthetic port used only for rendering"
+  },
+  "fileSha256": {
+    "awesome.yaml": "6f42c41e936f2f4540ddcc16d6e9d375e4bf6bdec3a54ed6b47c26f27a285328",
+    "Dockerfile": "9284dc34c630e82cd362b86cb7bc15ec69d70519e776647f3a9a85e8068426ee"
+  },
+  "notVerified": [
+    "Live platform capabilities, preflight and secret ownership",
+    "Subdomain availability, TLS and production Rootless Docker deployment",
+    "Real paid provider calls and provider credential validity"
+  ],
+  "providerKeys": "Optional secretRefs are commented until the operator supplies that provider key; providers remain disabled until configured."
+}

@@ -15,19 +15,21 @@ const iso=()=>new Date().toISOString();
 const userView=u=>({id:u.id,username:u.username,role:u.role,enabled:!!u.enabled,dailyLimit:u.daily_limit});
 const conversationView=c=>({id:c.id,provider:c.provider,title:c.title,createdAt:c.created_at,updatedAt:c.updated_at});
 const messageView=m=>({id:m.id,role:m.role,content:m.content,createdAt:m.created_at});
-const providerView=p=>({id:p.id,label:p.label,baseUrl:p.base_url,model:p.model,protocol:p.protocol,enabled:!!p.enabled,hasKey:!!p.secret,maxOutputTokens:p.max_output});
 const username=value=>{requireValue(typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_.@-]{1,63}$/.test(value),'用户名须为 2–64 位字母、数字或 . _ @ -');return value.toLowerCase();};
 const dailyLimit=value=>{requireValue(Number.isInteger(value)&&value>=1&&value<=10000,'每日调用上限须为 1–10000 的整数');return value;};
 
 export async function createApp(config,{providerCaller=callProvider}={}) {
   const db=await openStore(config,PROVIDER_DEFAULTS),secure=config.publicOrigin.startsWith('https:');
+  const environmentKey=id=>config.providerKeys?.[id]||'';
+  const keySource=p=>environmentKey(p.id)?'environment':p.secret?'stored':'none';
+  const providerView=p=>({id:p.id,label:p.label,baseUrl:p.base_url,model:p.model,protocol:p.protocol,enabled:!!p.enabled,hasKey:keySource(p)!=='none',keySource:keySource(p),maxOutputTokens:p.max_output});
   const loginByIp=new RateLimiter({limit:15,windowMs:600000});
   const loginByUser=new RateLimiter({limit:8,windowMs:600000});
   const chatRate=new RateLimiter({limit:8,windowMs:60000});
   const busyUsers=new Set(),controllers=new Set();let passwordWork=0;
   const fakeHash=await hashPassword(randomToken());
   const usage=u=>({used:db.prepare('SELECT used FROM usage WHERE user_id=? AND day=?').get(u.id,day())?.used||0,limit:u.daily_limit,day:day()});
-  const summaries=()=>db.prepare('SELECT * FROM providers ORDER BY rowid').all().map(p=>({id:p.id,label:p.label,model:p.model,enabled:!!p.enabled,configured:!!(p.secret&&p.model&&p.enabled)}));
+  const summaries=()=>db.prepare('SELECT * FROM providers ORDER BY rowid').all().map(p=>({id:p.id,label:p.label,model:p.model,enabled:!!p.enabled,configured:!!(keySource(p)!=='none'&&p.model&&p.enabled)}));
   const sessionView=(u,csrf)=>({user:userView(u),csrfToken:csrf,providers:summaries(),usage:usage(u),version:'1.0.0'});
   function authenticated(req) {
     const token=sessionToken(req);
@@ -91,9 +93,10 @@ export async function createApp(config,{providerCaller=callProvider}={}) {
         const b=await bodyAfterAuth(),id=providerMatch[1],p=validateProviderConfig(id,b,config.allowedHosts);
         const old=db.prepare('SELECT * FROM providers WHERE id=?').get(id);
         requireValue(b.apiKey===undefined||typeof b.apiKey==='string','API Key 格式不正确');
+        if(environmentKey(id)&&b.apiKey)throw new AppError(409,'PROVIDER_KEY_MANAGED','此 API Key 由平台环境配置管理，请在平台修改；地址、模型和启用状态仍可保存。');
         requireValue(!b.apiKey||(b.apiKey.length<=8192&&!/[\r\n\x00-\x20\x7f]/.test(b.apiKey)),'API Key 不能包含空白且长度须小于 8192');
         const sealed=b.apiKey?encryptSecret(b.apiKey,config.masterKey,id):old.secret;
-        requireValue(!p.enabled||!!sealed,'启用模型前请先配置 API Key');
+        requireValue(!p.enabled||!!(environmentKey(id)||sealed),'启用模型前请先配置 API Key');
         db.prepare('UPDATE providers SET base_url=?,model=?,protocol=?,secret=?,enabled=?,max_output=? WHERE id=?')
           .run(p.baseUrl,p.model,p.protocol,sealed,p.enabled?1:0,p.maxOutputTokens,id);
         return json(res,200,{provider:providerView(db.prepare('SELECT * FROM providers WHERE id=?').get(id))});
@@ -148,7 +151,7 @@ export async function createApp(config,{providerCaller=callProvider}={}) {
         requireValue(typeof b.message==='string'&&b.message.trim().length>0&&b.message.length<=16000,'消息须为 1–16000 个字符');
         if(busyUsers.has(u.id)||busyUsers.size>=4)throw new AppError(429,'CHAT_BUSY','当前请求较多，请稍后再试');
         const p=db.prepare('SELECT * FROM providers WHERE id=?').get(c.provider);
-        if(!p?.enabled||!p.secret||!p.model)throw new AppError(409,'PROVIDER_NOT_CONFIGURED','管理员尚未启用并配置这个模型');
+        if(!p?.enabled||keySource(p)==='none'||!p.model)throw new AppError(409,'PROVIDER_NOT_CONFIGURED','管理员尚未启用并配置这个模型');
         requireValue(db.prepare('SELECT count(*) AS n FROM messages WHERE conversation_id=?').get(c.id).n<1000,'会话过长，请新建对话');
         if(!chatRate.take(u.id))throw new AppError(429,'CHAT_RATE_LIMIT','发送过于频繁，请稍后再试');
         transaction(()=>{
@@ -166,7 +169,7 @@ export async function createApp(config,{providerCaller=callProvider}={}) {
           while(context.length&&context[0].role!=='user')context.shift();
           context.push({role:'user',content:b.message.trim()});
           let answer;
-          try {answer=await providerCaller({...providerView(p),apiKey:decryptSecret(p.secret,config.masterKey,p.id)},context,{allowedHosts:config.allowedHosts,signal:controller.signal});}
+          try {answer=await providerCaller({...providerView(p),apiKey:environmentKey(p.id)||decryptSecret(p.secret,config.masterKey,p.id)},context,{allowedHosts:config.allowedHosts,signal:controller.signal});}
           catch {throw new AppError(502,'PROVIDER_FAILED','模型调用失败，请检查 API 地址、密钥、模型名称、额度和网络连接后重试');}
           if(controller.signal.aborted)return;
           refreshAuth();
