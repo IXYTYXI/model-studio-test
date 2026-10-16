@@ -56,7 +56,7 @@ test('configuration rejects model/path injection, wrong protocol, invalid budget
     assert.throws(() => validateProviderConfig('openai', config('openai', { model })), safeError('INVALID_PROVIDER_CONFIG'));
   }
   for (const maxOutputTokens of [127, 4097, 128.1, '2048', null]) assert.throws(() => validateProviderConfig('openai', config('openai', { maxOutputTokens })), safeError('INVALID_PROVIDER_CONFIG'));
-  assert.throws(() => validateProviderConfig('anthropic', config('anthropic', { protocol: 'openai-chat' })), safeError('INVALID_PROVIDER_CONFIG'));
+  assert.throws(() => validateProviderConfig('anthropic', config('anthropic', { protocol: 'unsupported' })), safeError('INVALID_PROVIDER_CONFIG'));
   assert.throws(() => validateProviderConfig('unknown', config()), safeError('INVALID_PROVIDER_CONFIG'));
   assert.throws(() => validateProviderConfig('openai', config('openai', { enabled: 'true' })), safeError('INVALID_PROVIDER_CONFIG'));
   for (const field of ['model', 'enabled', 'baseUrl', 'protocol']) assert.throws(() => validateProviderConfig('openai', config('openai', { enabled: false, [field]: null })), safeError('INVALID_PROVIDER_CONFIG'), field);

@@ -1,4 +1,5 @@
 import { createApi, splitContent, googleAuthorizationUrl, googleLoginError } from './ui-lib.js';
+import { modelControl, disposeModelControls } from './model-control.js';
 import { selectControl, closeSelect } from './select-control.js';
 
 const $ = (id) => document.getElementById(id);
@@ -452,6 +453,7 @@ function formFooter(label = '保存设置') {
 }
 async function openSettings(tab = state.settingsTab) {
   if (!state.session) return;
+  disposeModelControls();
   closeSelect();
   const request = ++settingsRequest;
   const admin = state.session.user.role === 'admin';
@@ -492,7 +494,7 @@ function renderProviderSettings(providers, personal = false, allowShared = false
     title.append(el('span', 'key-status'));
     heading.append(title, toggle('启用连接', 'enabled', provider.enabled));
     const grid = el('div', 'fields-grid');
-    const protocols = provider.id === 'openai' ? [['openai-responses', 'OpenAI Responses'], ['openai-chat', 'OpenAI Chat Completions']] : [[provider.id, provider.id === 'anthropic' ? 'Anthropic Messages' : 'Gemini Generate Content']];
+    const protocols = [...(provider.id === 'openai' ? [] : [[provider.id, provider.id === 'anthropic' ? 'Anthropic Messages' : 'Gemini Generate Content']]), ['openai-responses', 'OpenAI Responses'], ['openai-chat', 'OpenAI 兼容 · Chat Completions']];
     const keyField = field('API Key', 'apiKey', { type: 'password', autocomplete: 'new-password' });
     const keyInput = keyField.querySelector('input');
     const keyHint = el('p', 'field-hint', '通过平台秘密配置更新');
@@ -515,7 +517,31 @@ function renderProviderSettings(providers, personal = false, allowShared = false
         ? (allowShared ? '当前使用：平台连接。保存以下设置将切换为个人连接。' : '平台连接未获授权，请填写并保存个人连接。')
         : `当前使用：个人连接${config.enabled ? '' : '（尚未启用）'}`;
     }
-    grid.append(field('API 基础地址', 'baseUrl', { value: provider.baseUrl, type: 'url', placeholder: 'https://api.example.com/v1', wide: true }), field('模型名称', 'model', { value: provider.model, placeholder: '填写服务商提供的模型 ID' }), field('接口协议', 'protocol', { value: provider.protocol, options: protocols }), keyField, field('最大输出 Token', 'maxOutputTokens', { value: String(provider.maxOutputTokens), type: 'number', min: 128, max: 4096, required: true }));
+    const baseField = field('API 基础地址', 'baseUrl', { value: provider.baseUrl, type: 'url', placeholder: 'https://api.example.com/v1', wide: true });
+    const baseInput = baseField.querySelector('input');
+    const protocolField = field('接口协议', 'protocol', { value: provider.protocol, options: protocols });
+    const protocolInput = protocolField.querySelector('input');
+    const modelField = field('模型名称', 'model', { value: provider.model, wide: true });
+    const picker = modelControl({ input: modelField.querySelector('input'), load: signal => {
+      const payload = { baseUrl: baseInput.value.trim(), protocol: protocolInput.value };
+      if (keySource !== 'environment' && keyInput.value.trim()) payload.apiKey = keyInput.value.trim();
+      return api(`/api/${personal ? 'account' : 'admin'}/providers/${provider.id}/models`, { method: 'POST', body: payload, signal });
+    }, onLoaded: result => { if (result.baseUrl) baseInput.value = result.baseUrl; } });
+    modelField.append(picker.root);
+    baseInput.addEventListener('input', picker.reset);
+    keyInput.addEventListener('input', picker.reset);
+    protocolInput.addEventListener('change', picker.reset);
+    let protocolHost = new URL(provider.baseUrl).hostname;
+    baseInput.addEventListener('input', () => {
+      try {
+        const host = new URL(baseInput.value.trim()).hostname;
+        if (host === protocolHost || !host.includes('.')) return;
+        protocolHost = host;
+        const suggested = host === 'api.openai.com' ? 'openai-responses' : host === 'api.anthropic.com' ? 'anthropic' : host === 'generativelanguage.googleapis.com' ? 'gemini' : 'openai-chat';
+        protocolField.querySelector('.select-control').setValue(suggested);
+      } catch { /* URL validation is shown on query/save. */ }
+    });
+    grid.append(baseField, keyField, protocolField, modelField, field('最大输出 Token', 'maxOutputTokens', { value: String(provider.maxOutputTokens), type: 'number', min: 128, max: 4096, required: true }));
     const footer = formFooter(personal ? '保存并使用个人连接' : '保存设置');
     if (personal) {
       remove = button('删除个人密钥', 'danger-button', async () => {
@@ -542,6 +568,7 @@ function renderProviderSettings(providers, personal = false, allowShared = false
     form.append(grid, footer);
     form.addEventListener('submit', event => {
       event.preventDefault();
+      picker.cancel();
       formRequest(form, async () => {
         const data = new FormData(form);
         const payload = { baseUrl: data.get('baseUrl').trim(), model: data.get('model').trim(), protocol: data.get('protocol'), maxOutputTokens: Number(data.get('maxOutputTokens')), enabled: data.has('enabled') };
@@ -549,6 +576,8 @@ function renderProviderSettings(providers, personal = false, allowShared = false
         if (keySource !== 'environment' && typeof apiKey === 'string' && apiKey.trim()) payload.apiKey = apiKey.trim();
         const result = await api(`/api/${personal ? 'account' : 'admin'}/providers/${provider.id}`, { method: 'PUT', body: payload });
         updateKeyState(result.provider);
+        baseInput.value = result.provider.baseUrl;
+        picker.saved();
         state.session = await api('/api/session');
         updateHeader();
       });
@@ -647,7 +676,7 @@ $('settings-button').addEventListener('click', () => openSettings('providers'));
 $('personal-settings-button').addEventListener('click', () => openSettings('personal'));
 $('top-settings').addEventListener('click', () => openSettings('personal'));
 $('close-settings').addEventListener('click', () => $('settings-dialog').close());
-$('settings-dialog').addEventListener('close', () => { closeSelect(); ++settingsRequest; });
+$('settings-dialog').addEventListener('close', () => { closeSelect(); disposeModelControls(); ++settingsRequest; });
 $('settings-dialog').querySelector('.settings-tabs').addEventListener('keydown', event => {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
   const tabs = [...document.querySelectorAll('.settings-tabs .tab')].filter(tab => !tab.hidden);

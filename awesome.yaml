@@ -19,6 +19,7 @@ services:
       BOOTSTRAP_USERNAME: "admin"
       DEFAULT_DAILY_LIMIT: "50"
       GLOBAL_DAILY_LIMIT: "500"
+      ALLOW_CUSTOM_API_HOSTS: "true"
       # Optional Google Web OAuth login: uncomment only with a real client ID
       # and the GOOGLE_CLIENT_SECRET secretRef below. The ID is not a secret.
       # GOOGLE_CLIENT_ID: "replace-with-real-web-client-id.apps.googleusercontent.com"

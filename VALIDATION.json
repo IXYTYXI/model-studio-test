@@ -3,7 +3,7 @@
   "verifiedOn": "2026-10-16",
   "runtime": "Node.js 24.13.0",
   "automatedTests": {
-    "passed": 134,
+    "passed": 159,
     "failed": 0,
     "command": "npm test"
   },
@@ -19,7 +19,9 @@
     "environmentKeyAndSecureCookie": "passed; fixture key not returned or persisted",
     "testNetwork": "none",
     "googleStartAndHostCookies": "passed with fixture OAuth config; no Google calls",
-    "personalKeyPersistence": "passed across container recreate"
+    "personalKeyPersistence": "passed across container recreate",
+    "scope": "Historical check before model discovery; this feature uses the remote platform for builds, never local Docker.",
+    "testImageCleanup": "The listed local test image was removed during the prior user-authorized cleanup."
   },
   "browser": {
     "login": "passed",
@@ -53,13 +55,33 @@
         "Tabs support arrow keys; members see only personal settings and no shared-key action",
         "Account modal and logout return cleanly to login; final browser error/warning log empty"
       ]
+    },
+    "modelDiscovery": {
+      "verifiedOn": "2026-10-16",
+      "method": "Disposable Node localhost fixture, mocked model list; no real API credentials or external provider calls",
+      "browsers": [
+        "Native Safari",
+        "Codex in-app browser"
+      ],
+      "viewports": [
+        "1280x720",
+        "390x844",
+        "320x568"
+      ],
+      "checks": [
+        "URL and Key only; third-party host auto-selects compatible chat protocol",
+        "Search by model ID/name, arrow/Enter selection, native Escape closes only menu",
+        "Save persists selected model and clears Key; saved Key can list at same URL",
+        "Changed URL without new Key rejected; query error and empty list keep manual input",
+        "Cancel or change credentials invalidates outstanding query",
+        "Admin managed Key remains disabled and supports model listing",
+        "Menus fit small screens, settings header remains visible",
+        "Safari save confirmation updates model helper text"
+      ]
     }
   },
   "notVerified": [
-    "Real paid model API calls; no real API keys were supplied",
-    "Public deployment, domain and production TLS",
-    "Production rootless Docker host or amd64 runtime",
-    "Live Awesome Deploy preflight, domain availability, secret ownership and public-https-v1 policy; local configuration checks are in PLATFORM-VALIDATION.json",
+    "Real provider model listing and paid generation; no real API keys supplied",
     "Real Google OAuth consent/code exchange with operator-owned Client ID/Secret and production callback"
   ],
   "googleLogin": {
@@ -72,5 +94,16 @@
     "fallback": "never automatic after personal failure, disable or deletion",
     "sharedAccess": "new members require admin grant; legacy member permission retained on upgrade",
     "upgrade": "legacy users and conversations retained; revoked shared permission survives restart"
+  },
+  "priorPublicRelease": {
+    "commit": "814639355bba06e0e83789c7797707dbda33944a",
+    "jobId": "d715ecd69cc04bc7b3cf83d600237cae",
+    "origin": "https://chatstd.awesome.guanghexinzhi.cn",
+    "checks": [
+      "TLS and health passed",
+      "Published assets matched commit",
+      "Persistent data volume and secret versions retained"
+    ],
+    "scope": "Completed prior release; current model discovery release recorded separately in operator deployment evidence."
   }
 }

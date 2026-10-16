@@ -13,8 +13,8 @@ const settings=(extra={})=>({baseUrl:'https://api.openai.com/v1',protocol:'opena
 async function fixture(t) {
   const dir=await mkdtemp(join(tmpdir(),'studio-personal-'));
   const config=readConfig({MASTER_KEY:randomBytes(32).toString('hex'),DATA_DIR:dir,BOOTSTRAP_PASSWORD:'fixture-admin-password',PUBLIC_ORIGIN:origin,OPENAI_API_KEY:'fixture-shared-key',ALLOWED_API_HOSTS:'custom.example'});
-  const calls=[];let fail=false;
-  const app=await createApp(config,{providerCaller:async(p)=>{calls.push(p);if(fail)throw new Error('secret failure');return {text:'fixture reply'};}});
+  const calls=[],modelCalls=[];let fail=false,lister=async()=>({models:[{id:"listed-model",name:"Listed model"}],truncated:false});
+  const app=await createApp(config,{modelLister:async(p,options)=>{modelCalls.push(p);return lister(p,options);},providerCaller:async(p)=>{calls.push(p);if(fail)throw new Error('secret failure');return {text:'fixture reply'};}});
   await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
   t.after(async()=>{app.server.closeAllConnections();await app.close();await rm(dir,{recursive:true,force:true});});
   function session(id) {const token=randomToken(),csrf=randomToken();app.db.prepare('INSERT INTO sessions(token,user_id,csrf,expires) VALUES(?,?,?,?)').run(tokenHash(token),id,csrf,Date.now()+3600000);return {id,cookie:'studio_session='+token,csrf};}
@@ -30,7 +30,7 @@ async function fixture(t) {
   const a=await member('member-a'),b=await member('member-b');
   await request('/api/admin/providers/openai',{method:'PUT',body:settings()});
   async function chat(auth=a) {const created=await request('/api/conversations',{method:'POST',auth,body:{provider:'openai'}});return request('/api/chat',{method:'POST',auth,body:{conversationId:created.json.conversation.id,message:'hello'}});}
-  return {app,config,calls,admin,a,b,request,chat,setFailure(){fail=true;}};
+  return {app,config,calls,modelCalls,admin,a,b,request,chat,setLister(fn){lister=fn;},setFailure(){fail=true;}};
 }
 test('personal provider settings require auth, Origin and CSRF, and cannot grant shared-key permission',async t=>{
   const f=await fixture(t);
@@ -83,4 +83,44 @@ test('changing a personal API destination requires entering its key again and re
   assert.equal((await f.request('/api/account/providers/openai',{method:'PUT',auth:f.a,body:settings({baseUrl:'https://custom.example/v1'})})).status,400);
   assert.equal((await f.request('/api/account/providers/openai',{method:'PUT',auth:f.a,body:settings({baseUrl:'https://custom.example/v1',apiKey:'fixture-custom-key'})})).status,200);
   assert.equal((await f.chat()).status,200);assert.equal(f.calls[0].apiKey,'fixture-custom-key');assert.equal(f.calls[0].baseUrl,'https://custom.example/v1');
+});
+
+const discovery=(extra={})=>({baseUrl:'https://api.openai.com/v1',protocol:'openai-responses',...extra});
+test('model discovery requires authentication, CSRF and admin scope and never saves input keys',async t=>{
+ const f=await fixture(t),path='/api/account/providers/openai/models',body=discovery({apiKey:'fixture-probe-key'});
+ assert.equal((await f.request(path,{method:'POST',auth:null,body})).status,401);
+ assert.equal((await f.request(path,{method:'POST',auth:f.a,csrf:'wrong',body})).status,403);
+ assert.equal((await f.request('/api/admin/providers/openai/models',{method:'POST',auth:f.a,body})).status,403);
+ const result=await f.request(path,{method:'POST',auth:f.a,body});assert.equal(result.status,200);assert.equal(result.json.models[0].id,'listed-model');assert.ok(!JSON.stringify(result).includes('fixture-probe-key'));
+ assert.equal(f.app.db.prepare('SELECT count(*) AS n FROM personal_providers WHERE user_id=?').get(f.a.id).n,0);assert.equal(f.calls.length,0);
+});
+test('discovery reuses only the current account key at the unchanged address and never borrows platform keys',async t=>{
+ const f=await fixture(t),path='/api/account/providers/openai/models';
+ await f.request('/api/account/providers/openai',{method:'PUT',auth:f.a,body:settings({apiKey:'fixture-a'})});
+ assert.equal((await f.request(path,{method:'POST',auth:f.b,body:discovery({userId:f.a.id})})).status,400);
+ assert.equal((await f.request(path,{method:'POST',auth:f.a,body:discovery({baseUrl:'https://custom.example/v1'})})).status,400);
+ assert.equal((await f.request(path,{method:'POST',auth:f.a,body:discovery()})).status,200);assert.equal(f.modelCalls[0].apiKey,'fixture-a');
+ assert.equal((await f.request(path,{method:'POST',auth:f.a,body:discovery({baseUrl:'https://custom.example/v1',apiKey:'fixture-new'})})).status,200);assert.equal(f.modelCalls[1].apiKey,'fixture-new');
+ assert.equal((await f.request('/api/account/providers',{auth:f.a})).json.providers[0].baseUrl,'https://api.openai.com/v1');
+});
+test('admin discovery can use an injected key only at its saved API address',async t=>{
+ const f=await fixture(t),path='/api/admin/providers/openai/models';
+ assert.equal((await f.request(path,{method:'POST',body:discovery()})).status,200);assert.equal(f.modelCalls[0].apiKey,'fixture-shared-key');
+ assert.equal((await f.request(path,{method:'POST',body:discovery({baseUrl:'https://custom.example/v1'})})).status,400);
+ assert.equal((await f.request(path,{method:'POST',body:discovery({apiKey:'override'})})).status,409);
+});
+test('discovery throttles repeated calls without consuming paid chat quota',async t=>{
+ const f=await fixture(t),path='/api/account/providers/openai/models',body=discovery({apiKey:'fixture-a'});
+ for(let i=0;i<10;i++)assert.equal((await f.request(path,{method:'POST',auth:f.a,body})).status,200);
+ assert.equal((await f.request(path,{method:'POST',auth:f.a,body})).status,429);
+ assert.equal((await f.request('/api/session',{auth:f.a})).json.usage.used,0);
+});
+test('one discovery per account runs at a time and unexpected errors never leak keys',async t=>{
+ const f=await fixture(t);let finish,started;const ready=new Promise(r=>started=r);
+ f.setLister(()=>new Promise(r=>{finish=r;started();}));
+ const path='/api/account/providers/openai/models',body=discovery({apiKey:'fixture-a'});
+ const first=f.request(path,{method:'POST',auth:f.a,body});await ready;
+ assert.equal((await f.request(path,{method:'POST',auth:f.a,body})).status,409);
+ finish({models:[],truncated:false});assert.equal((await first).status,200);
+ f.setLister(()=>{throw new Error('fixture-a private upstream failure');});const failure=await f.request(path,{method:'POST',auth:f.a,body});assert.equal(failure.status,502);assert.ok(!JSON.stringify(failure).includes('fixture-a'));
 });

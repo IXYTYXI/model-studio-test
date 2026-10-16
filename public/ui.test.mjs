@@ -60,3 +60,9 @@ test('OAuth callback errors use fixed messages without reflecting query contents
   assert.equal(ui.googleLoginError('<script>token=secret</script>'), ui.googleLoginError('failed'));
   assert.equal(ui.googleLoginError(null), '');
 });
+
+test('API cancellation is forwarded without reporting a failed login',async()=>{
+ const c=new AbortController();let seen;
+ const api=createApi({fetcher:async(_url,options)=>{seen=options.signal;throw new DOMException('Aborted','AbortError');}});
+ c.abort();await assert.rejects(api('/api/account/providers/openai/models',{method:'POST',body:{},signal:c.signal}),e=>e.name==='AbortError');assert.equal(seen,c.signal);
+});

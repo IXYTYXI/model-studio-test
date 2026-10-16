@@ -99,6 +99,7 @@ async function main() {
     'PORT=8080',
     'DEFAULT_DAILY_LIMIT=50',
     'GLOBAL_DAILY_LIMIT=500',
+    'ALLOW_CUSTOM_API_HOSTS=true',
     'ALLOWED_API_HOSTS=',
     ''
   ].join('\n');

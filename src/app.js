@@ -8,6 +8,7 @@ import {AppError,requireValue} from './errors.js';
 import {hashPassword,verifyPassword,randomToken,tokenHash,equalToken,encryptSecret,decryptSecret,RateLimiter} from './security.js';
 import {json,readJson,headers,cookie,sessionToken} from './http.js';
 import {PROVIDER_DEFAULTS,validateProviderConfig,callProvider} from './providers.js';
+import {createModelDiscovery} from './model-discovery-service.js';
 import {createGoogleLogin} from './google-login.js';
 import {createPersonalProviders,canUseSharedKeys} from './personal-providers.js';
 
@@ -19,13 +20,14 @@ const messageView=m=>({id:m.id,role:m.role,content:m.content,createdAt:m.created
 const username=value=>{requireValue(typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_.@-]{1,63}$/.test(value),'用户名须为 2–64 位字母、数字或 . _ @ -');return value.toLowerCase();};
 const dailyLimit=value=>{requireValue(Number.isInteger(value)&&value>=1&&value<=10000,'每日调用上限须为 1–10000 的整数');return value;};
 
-export async function createApp(config,{providerCaller=callProvider,googleClient,googleNow}={}) {
+export async function createApp(config,{providerCaller=callProvider,modelLister,googleClient,googleNow}={}) {
   const db=await openStore(config,PROVIDER_DEFAULTS),secure=config.publicOrigin.startsWith('https:');
   const userView=u=>({id:u.id,username:u.username,role:u.role,enabled:!!u.enabled,dailyLimit:u.daily_limit,allowSharedKeys:canUseSharedKeys(u),email:db.prepare('SELECT email FROM google_accounts WHERE user_id=?').get(u.id)?.email||null,passwordEnabled:u.password.startsWith('scrypt:')});
   const environmentKey=id=>config.providerKeys?.[id]||'';
   const keySource=p=>environmentKey(p.id)?'environment':p.secret?'stored':'none';
   const providerView=p=>({id:p.id,label:p.label,baseUrl:p.base_url,model:p.model,protocol:p.protocol,enabled:!!p.enabled,hasKey:keySource(p)!=='none',keySource:keySource(p),maxOutputTokens:p.max_output});
   const personal=createPersonalProviders({db,config,sharedView:providerView});
+  const discoverModels=createModelDiscovery({db,config,lister:modelLister});
   const loginByIp=new RateLimiter({limit:15,windowMs:600000});
   const loginByUser=new RateLimiter({limit:8,windowMs:600000});
   const chatRate=new RateLimiter({limit:8,windowMs:60000});
@@ -84,6 +86,15 @@ export async function createApp(config,{providerCaller=callProvider,googleClient
       }
       refreshAuth();
       async function bodyAfterAuth() {const body=await readJson(req);refreshAuth();return body;}
+      const modelsMatch=path.match(/^\/api\/(account|admin)\/providers\/(openai|anthropic|gemini)\/models$/);
+      if(modelsMatch&&method==='POST') {
+        const body=await bodyAfterAuth(),controller=new AbortController();controllers.add(controller);
+        const cancel=()=>{if(!res.writableEnded)controller.abort();};res.on('close',cancel);
+        try {
+          const result=await discoverModels({scope:modelsMatch[1],id:modelsMatch[2],body,user:u,signal:controller.signal});
+          refreshAuth();return json(res,200,result);
+        } finally {res.off('close',cancel);controllers.delete(controller);}
+      }
       if(path==='/api/session'&&method==='GET')return json(res,200,sessionView(u,u.csrf));
       if(path==='/api/providers'&&method==='GET')return json(res,200,{providers:summaries(u)});
       if(path==='/api/account/providers'&&method==='GET')return json(res,200,personal.settings(u));

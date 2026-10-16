@@ -5,6 +5,8 @@
 ## 功能
 
 - OpenAI Responses / Chat Completions、Anthropic Messages、Gemini generateContent API。
+- 填写 API 地址和 Key 后获取模型列表，支持搜索、键盘选择和手动模型 ID；个人连接与管理员平台连接均可使用。
+- 三个工作空间均可选择 OpenAI 兼容协议，也支持 Anthropic、Gemini 原生模型列表。
 - 管理员配置 API 地址、模型名称、API Key、输出长度和启用状态。
 - 每个账号可独立设置、替换和删除个人 API Key、API 地址和模型；新成员默认使用自己的 Key，平台 Key 需要管理员单独授权。
 - 保留用户名和密码登录；配置 Google 登录后，所有通过 Google 验证的账号均可首次自动注册为普通成员，无应用内邮箱白名单。
@@ -40,9 +42,9 @@ docker compose up -d
 
 构建不下载依赖，固定的基础镜像需预先缓存。公网部署需要 HTTPS 反向代理，并将 `PUBLIC_ORIGIN` 设置为实际访问的 HTTPS origin；默认宿主机只绑定 `127.0.0.1:8080`。
 
-Awesome Deploy 0.5.0 使用仓库根目录的 [awesome.yaml](awesome.yaml)，应用前缀为 `chatstd`。管理员须启用 `public-https-v1` 并准备清单引用的业务秘密。模型 Key 可通过 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GEMINI_API_KEY` 注入；在清单中仅启用自己已准备好 Key 的供应商引用。平台连接内环境 Key 优先，页面只显示“由平台管理”，不会返回密钥值。
+Awesome Deploy 使用仓库根目录的 [awesome.yaml](awesome.yaml)，应用前缀为 `chatstd`。管理员须启用 `public-https-v1` 并准备清单引用的业务秘密。模型 Key 可通过 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GEMINI_API_KEY` 注入；在清单中仅启用自己已准备好 Key 的供应商引用。平台连接内环境 Key 优先，页面只显示“由平台管理”，不会返回密钥值。
 
-平台不会读取 Compose 或本地 `.env` 来替代部署清单。当前尚未完成线上预检、域名占用检查和真实模型调用，配置文件不代表已上线。
+平台不会读取 Compose 或本地 `.env` 来替代部署清单。现有应用已部署于 [Chat Studio](https://chatstd.awesome.guanghexinzhi.cn)，appId 为 `30ee5b3e97d44708a2b7e97ca9815e10`；后续更新沿用此 appId 和持久卷。真实模型调用仍需使用你自己的有效 Key 验收。
 
 详细步骤见 [使用说明](README.txt) 和 [部署、配置及备份说明](DEPLOYMENT.txt)。
 
@@ -61,7 +63,9 @@ Google 的 External + Testing 通常受测试用户名单限制，但仅请求 `
 
 ## 个人 API Key
 
-登录后打开侧栏的 **个人 API Key**，为 OpenAI、Claude 或 Gemini 填写服务商提供的 API 地址、模型名称和 Key，启用并保存即可。每个账号独立配置；密钥使用 AES-256-GCM 加密，并绑定所属用户和供应商。保存后只显示“密钥已保存”，不会返回密钥原文。更改 API 地址必须重新填写对应 Key；自定义主机须由部署者加入 `ALLOWED_API_HOSTS`。
+登录后打开侧栏的 **个人 API Key**，填写服务商提供的 API 地址和 Key，点击 **获取模型**，搜索并选择模型，勾选 **启用连接** 后保存。第三方地址默认选择 OpenAI 兼容 Chat Completions；若服务商使用其他协议，手动选择对应协议。每个账号独立配置；密钥使用 AES-256-GCM 加密，并绑定所属用户和供应商。保存后只显示“密钥已保存”，不会返回密钥原文。更改 API 地址必须重新填写对应 Key；部署清单已启用 `ALLOW_CUSTOM_API_HOSTS=true`，支持第三方公网 HTTPS 域名（443 端口），并保留私网阻断、DNS 校验与 IP 固定、TLS 校验及禁止重定向。设为 `false` 时，只允许官方主机及 `ALLOWED_API_HOSTS` 中的精确域名。
+
+获取列表不会保存、启用或切换连接，也不发起生成请求。已保存的 Key 留空即可复用，但仅限原 API 地址。列表为空或服务商不支持列表时可手动填写模型 ID。列表只代表服务商返回的目录，不保证每个模型都有调用权限；上下文上限、价格、余额和具体功能也不保证包含在列表中。查询有 20 秒总超时，最多 10 页、1000 个模型；每账号每分钟最多 10 次、全站 60 次，同时最多 4 个账号查询。
 
 个人连接一经选择，调用失败、停用或删除密钥都不会自动改用平台 Key。管理员可在成员管理中授权“允许使用平台连接”；有权限的成员可在个人设置中选择平台连接。平台环境 Key 只对平台连接生效，不覆盖个人 Key。Google 新成员和新建本地成员默认没有平台连接权限；升级前的已有成员保留原权限，管理员可撤销。
 
@@ -73,4 +77,4 @@ Google 的 External + Testing 通常受测试用户名单限制，但仅请求 `
 npm test
 ```
 
-验证范围与测试数量见 [VALIDATION.json](VALIDATION.json)，平台清单静态校验见 [PLATFORM-VALIDATION.json](PLATFORM-VALIDATION.json)。尚未进行真实 Google 账号登录、付费模型调用或公网部署验收。
+验证范围与测试数量见 [VALIDATION.json](VALIDATION.json)，平台清单静态校验见 [PLATFORM-VALIDATION.json](PLATFORM-VALIDATION.json)。自动化模型列表测试使用模拟响应；真实 Google 账号登录和付费模型调用尚未验证。公网发布与本地测试记录分别记录，避免将测试环境结果视为真实供应商验收。

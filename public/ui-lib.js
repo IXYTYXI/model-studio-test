@@ -1,13 +1,14 @@
 export function createApi({ getToken = () => '', onUnauthorized = () => {}, fetcher = fetch } = {}) {
-  return async function api(path, { method = 'GET', body } = {}) {
+  return async function api(path, { method = 'GET', body, signal } = {}) {
     const publicLogin = path === '/api/login' || path === '/api/auth/google/start';
     const headers = { Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (method !== 'GET' && !publicLogin) headers['X-CSRF-Token'] = getToken();
     let response;
     try {
-      response = await fetcher(path, { method, headers, credentials: 'same-origin', body: body === undefined ? undefined : JSON.stringify(body) });
-    } catch {
+      response = await fetcher(path, { method, headers, ...(signal ? {signal} : {}), credentials: 'same-origin', body: body === undefined ? undefined : JSON.stringify(body) });
+    } catch (error) {
+      if (signal?.aborted || error.name === 'AbortError') throw error;
       throw new Error('网络连接中断。请检查连接后重试。');
     }
     let data;

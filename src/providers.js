@@ -59,7 +59,7 @@ function safeBaseUrl(value, allowedHosts) {
       if (typeof host === 'string' && validDnsName(host.toLowerCase())) hosts.add(host.toLowerCase());
     }
   }
-  if (!hosts.has(url.hostname)) throw error('INVALID_PROVIDER_CONFIG');
+  if (!allowedHosts?.has('*') && !hosts.has(url.hostname)) throw error('INVALID_PROVIDER_CONFIG');
   return url.origin + url.pathname.replace(/\/+$/, '');
 }
 
@@ -67,14 +67,16 @@ export function validateProviderConfig(id, data, allowedHosts) {
   const defaults = PROVIDER_DEFAULTS.find((provider) => provider.id === id);
   if (!defaults || !data || typeof data !== 'object' || Array.isArray(data)) throw error('INVALID_PROVIDER_CONFIG');
   const protocol = data.protocol === undefined ? defaults.protocol : data.protocol;
-  if (!(id === 'openai' ? ['openai-responses', 'openai-chat'] : [id]).includes(protocol)) throw error('INVALID_PROVIDER_CONFIG');
+  if (!['openai-responses', 'openai-chat', ...(id === 'openai' ? [] : [id])].includes(protocol)) throw error('INVALID_PROVIDER_CONFIG');
   const enabled = data.enabled === undefined ? false : data.enabled;
   if (typeof enabled !== 'boolean') throw error('INVALID_PROVIDER_CONFIG');
   const model = data.model === undefined ? '' : data.model;
   if (typeof model !== 'string' || model.length > 160 || (model === '' ? enabled : !/^[A-Za-z0-9][A-Za-z0-9._:-]*(?:\/[A-Za-z0-9][A-Za-z0-9._:-]*)*$/.test(model))) throw error('INVALID_PROVIDER_CONFIG');
   const maxOutputTokens = data.maxOutputTokens === undefined ? 2048 : data.maxOutputTokens;
   if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 128 || maxOutputTokens > 4096) throw error('INVALID_PROVIDER_CONFIG');
-  return { baseUrl: safeBaseUrl(data.baseUrl === undefined ? defaults.baseUrl : data.baseUrl, allowedHosts), model, protocol, enabled, maxOutputTokens };
+  let baseUrl = safeBaseUrl(data.baseUrl === undefined ? defaults.baseUrl : data.baseUrl, allowedHosts);
+  if (new URL(baseUrl).pathname === '/') baseUrl += protocol === 'gemini' ? '/v1beta' : '/v1';
+  return { baseUrl, model, protocol, enabled, maxOutputTokens };
 }
 
 function inV4Range(value, base, bits) {
@@ -250,10 +252,10 @@ function sendRequest(request, address, signal) {
     if (signal.aborted) { finish(signal.reason); return; }
     signal.addEventListener('abort', abort, { once: true });
     const url = new URL(request.url);
-    const body = JSON.stringify(request.body);
+    const body = request.method === 'GET' ? undefined : JSON.stringify(request.body);
     try {
       req = https.request(url, {
-        method: 'POST', headers: { ...request.headers, 'Content-Length': Buffer.byteLength(body) },
+        method: request.method || 'POST', headers: { ...request.headers, ...(body === undefined ? {} : { 'Content-Length': Buffer.byteLength(body) }) },
         agent: false, rejectUnauthorized: true, servername: url.hostname, autoSelectFamily: false,
         lookup: (_host, options, callback) => {
           if (options?.all) callback(null, [address]);
@@ -265,7 +267,9 @@ function sendRequest(request, address, signal) {
         res.on('error', () => finish(error('PROVIDER_UNAVAILABLE')));
         if (settled) { res.destroy(); return; }
         if (res.statusCode < 200 || res.statusCode >= 300 || (res.headers['content-encoding'] && res.headers['content-encoding'] !== 'identity')) {
-          finish(error('PROVIDER_UNAVAILABLE')); return;
+          const failure = error('PROVIDER_UNAVAILABLE');
+          failure.upstreamStatus = res.statusCode;
+          finish(failure); return;
         }
         let size = 0;
         const chunks = [];
@@ -299,17 +303,21 @@ export async function callProvider(config, messages, { allowedHosts, signal } = 
   const normalized = validateProviderConfig(config?.id, config, allowedHosts);
   if (!normalized.enabled || !normalized.model || typeof config.apiKey !== 'string' || !/^[\x21-\x7e]{1,8192}$/.test(config.apiKey)) throw error('PROVIDER_NOT_CONFIGURED');
   const request = buildProviderRequest({ ...normalized, apiKey: config.apiKey }, messages);
+  return parseProviderResponse(normalized.protocol, await requestProviderJson(request, { signal }));
+}
+
+// Shared guarded transport: DNS is checked and pinned separately on every request.
+export async function requestProviderJson(request, { signal, timeoutMs = TIMEOUT_MS } = {}) {
   const controller = new AbortController();
   const abort = () => controller.abort(error('PROVIDER_CANCELLED'));
   if (signal?.aborted) abort();
   else signal?.addEventListener('abort', abort, { once: true });
   // This is one total deadline, including lookup, TLS, headers and the complete body.
-  const timer = setTimeout(() => controller.abort(error('PROVIDER_TIMEOUT')), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(error('PROVIDER_TIMEOUT')), timeoutMs);
   try {
     if (controller.signal.aborted) throw controller.signal.reason;
     const address = await resolveAddress(new URL(request.url).hostname, controller.signal);
-    const response = await sendRequest(request, address, controller.signal);
-    return parseProviderResponse(normalized.protocol, response);
+    return await sendRequest(request, address, controller.signal);
   } catch (failure) {
     if (failure instanceof ProviderError) throw failure;
     throw error('PROVIDER_UNAVAILABLE');

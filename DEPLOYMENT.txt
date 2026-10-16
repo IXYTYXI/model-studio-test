@@ -4,8 +4,8 @@ Model Studio 部署说明
 适配 Awesome Deploy 0.5.0、《接入技术协议 v1.1》、schemaVersion 1，核对基线为 5bf511306cc1031c7b1fadd814201265cf121b88。平台根目录清单为 awesome.yaml；compose.yaml 仅供独立 Docker 使用。
 仓库：https://github.com/IXYTYXI/model-studio-test.git
 分支：codex/model-studio；提交并推送后以 git rev-parse HEAD 取得最终完整 commit，用该 commit 验收，不使用未提交文件。
-应用为新应用，显示名 Chat Studio，用户选定前缀 chatstd；预期地址 https://chatstd.awesome.guanghexinzhi.cn。前缀是否空闲、服务器容量与实际公网策略仍需平台核验；没有创建 appId，也没有提交真实部署。
-本次已补齐部署清单、平台模型 Key 注入支持，并按用户授权增加可选 Google 登录及首次登录自动创建普通成员。没有改动平台网络策略或模型请求协议。Google 客户端配置仍为注释，尚未提供真实凭据，也未完成真实 Google 登录验收。
+现有应用显示名 Chat Studio，前缀 chatstd，已发布于 https://chatstd.awesome.guanghexinzhi.cn。appId 为 30ee5b3e97d44708a2b7e97ca9815e10；已有公网健康、TLS 与持久卷验收，后续更新必须沿用该 appId。最初静态协议基线如上，实际发布由当前远端平台重新验证。
+本次已补齐部署清单、平台模型 Key 注入支持，并按用户授权增加可选 Google 登录及首次登录自动创建普通成员。本次新增模型列表查询和三个工作空间的 OpenAI 兼容协议选择；保持平台 public-https-v1 网络策略。Google 客户端配置仍为注释，尚未提供真实凭据，也未完成真实 Google 登录验收。
 
 Awesome Deploy 操作员准备
 1. 确认平台管理员已启用并验收 public-https-v1；新部署才使用新策略，重试旧冻结任务无效。该策略允许公网 IPv4 TCP 443 和平台指定 DNS；清单不添加 egress、DNS、代理或 Compose 网络字段。官方 API 及兼容服务均需实际在公网 IPv4 的 443 可达。
@@ -77,7 +77,8 @@ DEFAULT_DAILY_LIMIT：默认 50，范围 1–10000，用于默认账号额度。
 GLOBAL_DAILY_LIMIT：默认 500，范围 1–100000，限制全站每日已接受的对话请求次数。
 GOOGLE_CLIENT_ID：可选的 Google Web OAuth Client ID，通常以 .apps.googleusercontent.com 结尾，不属于秘密；必须与 GOOGLE_CLIENT_SECRET 同时配置。两者都未设置时 Google 登录关闭。
 GOOGLE_CLIENT_SECRET：可选的 Google Web OAuth Client Secret；平台用 secretRefs 注入，本机可在 .env 配置，不返回浏览器、不写入应用数据库。不可用模型 API Key 代替；变更后需重启或新部署。
-ALLOWED_API_HOSTS：逗号分隔的额外精确 DNS 主机名，例如 api.example.com。默认官方 API 主机已经允许，不必重复。不能填 URL、端口、IP、通配符或私网主机。
+ALLOW_CUSTOM_API_HOSTS：true 或 false；未设置默认为 false。awesome.yaml 和 .env.example 中为 true，以支持用户只填写第三方公网 HTTPS 地址和 Key。仅允许 443 端口、公共 DNS 解析结果；每次请求校验并固定解析 IP，禁止重定向。
+ALLOWED_API_HOSTS：ALLOW_CUSTOM_API_HOSTS=false 时允许的额外精确 DNS 主机名，逗号分隔，例如 api.example.com；官方 API 主机已经允许。不能填 URL、端口、IP、通配符或私网主机。
 OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY：可选的业务自有模型密钥；不含空白的可打印 ASCII，最长 8192 字符。平台用 secretRefs 映射，独立 Docker 可在 .env 中配置。环境 Key 优先于管理页保存的 Key，且不会写入数据库或返回浏览器；存在环境 Key 时，页面不能修改该供应商 Key。移除环境 Key 后，如数据库原来保存过该供应商的 Key，将恢复使用原保存值；没有保存值则变为未配置。轮换环境 Key 后需新部署或重启，使进程读取新值。
 HOST、PORT：本机 setup 默认 127.0.0.1、8080；Compose 覆盖为 0.0.0.0、8080。
 _FILE 路径必须在服务进程内部可读。Compose 当前仅加载 .env，不自动挂载外部密钥文件；使用 _FILE 时需由运维添加只读挂载并检查 65532 用户读权限。不要把宿主机路径误当作容器内路径。
@@ -93,3 +94,8 @@ _FILE 路径必须在服务进程内部可读。Compose 当前仅加载 .env，�
 Docker 场景先 docker compose stop，再由运维将命名卷完整备份；备份完成后 docker compose start。docker compose down 保留命名卷；docker compose down -v 会删除数据，不要用于普通升级。
 升级前备份数据及当前配置，重新构建固定版本镜像，再 docker compose up -d。不要更换 MASTER_KEY，也不要把新数据卷当作旧数据卷。如果修改了 PUBLIC_ORIGIN、允许主机或密钥配置，应重建容器使环境生效。
 账号日额度按 Asia/Shanghai 重置。已经接受并扣额的调用即使上游报错也计入当日额度；限额是请求次数，无法保证费用上限。默认是单进程单实例 SQLite 部署，不建议多实例共享数据库卷。
+
+模型列表查询
+个人与管理员平台连接均支持“获取模型”。OpenAI 兼容协议使用 GET {base}/models；Anthropic 使用其 models API；Gemini 列出支持 generateContent 的模型。只有主机名时补全 /v1（Gemini 原生为 /v1beta），自定义路径原样保留。
+查询使用当前输入的 Key 或原地址已保存的当前账号 Key；不持久化输入值、不启用连接、不消耗本站对话额度，不发送生成请求。环境 Key 仍仅供管理员的平台连接查询使用，改变地址须先明确保存新地址。
+查询总超时 20 秒，每页响应最多 2 MiB，最多 10 页和 1000 个模型；每账号每分钟 10 次、全站 60 次，同账号只允许一个查询、全站最多四个并发。列表不保证模型可调用、价格、余额或完整能力信息。

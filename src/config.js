@@ -14,6 +14,8 @@ export function readConfig(env=process.env) {
     if(!/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/.test(name))throw new Error('ALLOWED_API_HOSTS requires exact DNS hostnames');
     allowedHosts.add(name);
   }
+  if(env.ALLOW_CUSTOM_API_HOSTS!==undefined&&!['true','false'].includes(env.ALLOW_CUSTOM_API_HOSTS))throw new Error('ALLOW_CUSTOM_API_HOSTS must be true or false');
+  if(env.ALLOW_CUSTOM_API_HOSTS==='true')allowedHosts.add('*');
   const bootstrapUsername=(env.BOOTSTRAP_USERNAME||'admin').toLowerCase();
   if(!/^[a-z0-9][a-z0-9_.@-]{1,63}$/.test(bootstrapUsername))throw new Error('Invalid BOOTSTRAP_USERNAME');
   const providerKeys={};

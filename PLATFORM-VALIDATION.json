@@ -1,8 +1,6 @@
 {
-  "checkedOn": "2026-10-15",
+  "checkedOn": "2026-10-16",
   "protocol": "v1.1",
-  "platformVersion": "0.5.0",
-  "platformSourceCommit": "5bf511306cc1031c7b1fadd814201265cf121b88",
   "repository": "https://github.com/IXYTYXI/model-studio-test.git",
   "ref": "codex/model-studio",
   "subdomain": "chatstd",
@@ -14,17 +12,27 @@
     "repositoryAndRef": "passed",
     "dockerfileSupportedSyntax": "passed; no registry pull performed by this static check",
     "gatewayRoutesAndRendering": "passed; synthetic port used only for rendering",
-    "optionalGoogleSecretReference": "passed with client ID env and GOOGLE_CLIENT_SECRET secretRef enabled in validation-only copy"
+    "optionalGoogleSecretReference": "passed with client ID env and GOOGLE_CLIENT_SECRET secretRef enabled in validation-only copy",
+    "currentRemoteManifestValidation": "passed against current platform settings and previous release manifest",
+    "intendedRuntimeManifestChange": "Only ALLOW_CUSTOM_API_HOSTS=true; network policy remains public-https-v1"
   },
   "fileSha256": {
-    "awesome.yaml": "f5af78f4266de22adf9fc0d4757fb538bbf70befedc7c4739ac709e933368e37",
+    "awesome.yaml": "3934400bb3f5b8279416a954f7b6ce83de76ad670660a46e0979f9a80a64d325",
     "Dockerfile": "46047859b73ea3ac43253dc28d71347b9ddb658430117a7e70463f6c26e0fceb"
   },
   "notVerified": [
-    "Live platform capabilities, preflight and secret ownership",
-    "Subdomain availability, TLS and production Rootless Docker deployment",
     "Real paid provider calls and provider credential validity",
     "Real Google client credentials, OAuth consent and callback on deployed origin"
   ],
-  "providerKeys": "Optional secretRefs are commented until the operator supplies that provider key; providers remain disabled until configured."
+  "providerKeys": "Optional secretRefs are commented until the operator supplies that provider key; providers remain disabled until configured.",
+  "initialStaticBaseline": {
+    "platformVersion": "0.5.0",
+    "platformSourceCommit": "5bf511306cc1031c7b1fadd814201265cf121b88"
+  },
+  "platformVersion": "0.7.0",
+  "priorPublicRelease": {
+    "jobId": "d715ecd69cc04bc7b3cf83d600237cae",
+    "status": "succeeded",
+    "note": "Domain/TLS, rootless runtime and persistent volume verified for prior release; each new commit must complete its own platform deployment."
+  }
 }

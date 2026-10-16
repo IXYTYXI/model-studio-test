@@ -1,6 +1,7 @@
 let dismissActive = () => {};
 
 export function closeSelect() { dismissActive(); }
+export function activatePopup(close) { closeSelect(); dismissActive = close; return () => { if (dismissActive === close) dismissActive = () => {}; }; }
 
 // Keep the submitted value separate from presentation, including fixed protocols.
 export function selectControl({ id, name, value, options, labelId }) {
@@ -95,6 +96,7 @@ export function selectControl({ id, name, value, options, labelId }) {
     viewport?.addEventListener('resize', close, opts);
     root.closest('dialog')?.addEventListener('close', close, opts);
   }
+  root.setValue = value => { const index = options.findIndex(([key]) => key === value); if (index < 0) return; selected = index; input.value = value; text.textContent = options[index][1]; close(); input.dispatchEvent(new Event('change', { bubbles: true })); };
   trigger.addEventListener('click', () => menu ? close() : open());
   trigger.addEventListener('blur', close);
   trigger.addEventListener('keydown', event => {
