@@ -80,13 +80,23 @@ test('member accounts cannot manage keys or read another account conversation',a
   assert.equal((await f.request('/api/admin/users/'+created.json.user.id,{method:'PATCH',body:{enabled:false},session:admin})).status,200);
   assert.equal((await f.request('/api/session',{session:member})).status,401);
 });
-test('request quotas persist and all callers including admins are limited',async t=>{
-  const f=await fixture(t,{config:{defaultDailyLimit:1}}),s=await f.login();
-  await f.request('/api/admin/providers/openai',{method:'PUT',session:s,body:{baseUrl:'https://api.openai.com/v1',model:'test-model',protocol:'openai-responses',apiKey:'test-key',enabled:true,maxOutputTokens:1024}});
-  const c=(await f.request('/api/conversations',{method:'POST',session:s,body:{provider:'openai'}})).json.conversation;
-  assert.equal((await f.request('/api/chat',{method:'POST',session:s,body:{conversationId:c.id,message:'one'}})).status,200);
-  assert.equal((await f.request('/api/chat',{method:'POST',session:s,body:{conversationId:c.id,message:'two'}})).status,429);
-  assert.equal(f.calls.length,1);assert.equal(f.app.db.prepare('SELECT used FROM usage').get().used,1);
+test('member request quotas persist while administrator usage is unlimited',async t=>{
+  const f=await fixture(t,{config:{defaultDailyLimit:1,globalDailyLimit:1}}),admin=await f.login();
+  await f.request('/api/admin/providers/openai',{method:'PUT',session:admin,body:{baseUrl:'https://api.openai.com/v1',model:'test-model',protocol:'openai-responses',apiKey:'test-key',enabled:true,maxOutputTokens:1024}});
+  await f.request('/api/admin/users',{method:'POST',session:admin,body:{username:'quota-member',password:'member-password-long-123',dailyLimit:1,allowSharedKeys:true}});
+  const member=await f.login('quota-member','member-password-long-123');
+  const a=(await f.request('/api/conversations',{method:'POST',session:admin,body:{provider:'openai'}})).json.conversation;
+  const m=(await f.request('/api/conversations',{method:'POST',session:member,body:{provider:'openai'}})).json.conversation;
+  // More than the old per-minute and per-day limits; no real provider traffic.
+  for(let i=0;i<9;i++)assert.equal((await f.request('/api/chat',{method:'POST',session:admin,body:{conversationId:a.id,message:'admin '+i}})).status,200);
+  assert.equal((await f.request('/api/chat',{method:'POST',session:member,body:{conversationId:m.id,message:'one'}})).status,200);
+  assert.equal((await f.request('/api/chat',{method:'POST',session:member,body:{conversationId:m.id,message:'two'}})).status,429);
+  // Exhausted member/global budget must not block the administrator either.
+  assert.equal((await f.request('/api/chat',{method:'POST',session:admin,body:{conversationId:a.id,message:'admin after member limit'}})).status,200);
+  const usage=(await f.request('/api/session',{session:admin})).json;
+  assert.equal(usage.usage.used,10);assert.equal(usage.usage.limit,null);assert.equal(usage.usage.unlimited,true);assert.equal(usage.user.dailyLimit,null);
+  assert.equal(member.usage.limit,1);assert.equal(member.usage.unlimited,false);
+  const updated=await f.request('/api/admin/users/'+admin.user.id,{method:'PATCH',session:admin,body:{dailyLimit:1}});assert.equal(updated.json.user.dailyLimit,null);
 });
 test('password change revokes existing sessions and old password',async t=>{
   const f=await fixture(t),s=await f.login(),other=await f.login();
@@ -122,7 +132,7 @@ test('unconfigured and invalid provider requests never invoke the upstream',asyn
   assert.equal((await f.request('/api/admin/providers/openai',{method:'PUT',session:s,body:{baseUrl:'https://evil.example/v1',model:'test',enabled:true,apiKey:'test-key'}})).status,400);
   assert.equal(f.calls.length,0);
 });
-test('concurrent calls from a single account cannot bypass quota or duplicate conversation writes',async t=>{
+test('duplicate requests for the same conversation cannot double-write messages',async t=>{
   let release,started;const waiting=new Promise(resolve=>{started=resolve;});
   const f=await fixture(t,{providerCaller:async()=>{started();await new Promise(resolve=>{release=resolve;});return {text:'done'};}}),s=await f.login();
   await f.request('/api/admin/providers/openai',{method:'PUT',session:s,body:{baseUrl:'https://api.openai.com/v1',model:'test-model',protocol:'openai-responses',apiKey:'test-key',enabled:true,maxOutputTokens:1024}});
@@ -197,4 +207,41 @@ test('pending generation allows history, settings and new conversation reads wit
  const result=await pending;assert.equal(result.json.conversation.id,body.conversationId);
  assert.equal((await f.request('/api/conversations/'+other,{session})).json.messages.length,0);
  assert.equal((await f.request('/api/conversations/'+body.conversationId,{session})).json.messages.at(-1).content,'original conversation only');
+});
+
+
+test('one account can generate in separate conversations and models simultaneously',async t=>{
+ const releases=new Map(),started=new Map();
+ const f=await fixture(t,{providerCaller:async(p,m)=>{const message=m.at(-1).content;started.get(message)?.();await new Promise(r=>releases.set(message,r));return {text:p.id+':'+message};}});
+ const {session,body}=await prepareLongChat(f);
+ await f.request('/api/admin/providers/gemini',{method:'PUT',session,body:{baseUrl:'https://generativelanguage.googleapis.com/v1beta',model:'test-model',protocol:'gemini',apiKey:'fixture',enabled:true,maxOutputTokens:8192}});
+ const second=(await f.request('/api/conversations',{method:'POST',session,body:{provider:'openai'}})).json.conversation;
+ const third=(await f.request('/api/conversations',{method:'POST',session,body:{provider:'gemini'}})).json.conversation;
+ const unrelated=(await f.request('/api/conversations',{method:'POST',session,body:{provider:'anthropic'}})).json.conversation;
+ const pending=[];
+ try {
+  for(const [id,message] of [[body.conversationId,'first'],[second.id,'second'],[third.id,'third']]){
+   const observed=new Promise(r=>started.set(message,()=>r('started')));
+   const response=f.request('/api/chat',{method:'POST',session,body:{conversationId:id,message}});pending.push(response);
+   assert.equal(await Promise.race([observed,response.then(r=>r.status)]),'started');
+  }
+  assert.equal((await f.request('/api/chat',{method:'POST',session,body:{conversationId:second.id,message:'duplicate'}})).status,429);
+  assert.equal((await f.request('/api/conversations/'+second.id,{method:'DELETE',session})).status,409);
+  assert.equal((await f.request('/api/conversations/'+unrelated.id,{method:'DELETE',session})).status,200);
+ } finally {for(const release of releases.values())release();await Promise.all(pending);}
+ const results=await Promise.all(pending);assert.deepEqual(results.map(r=>r.json.messages.at(-1).content),['openai:first','openai:second','gemini:third']);
+ assert.equal(f.app.db.prepare('SELECT used FROM usage WHERE user_id=?').get(session.user.id).used,3);
+});
+
+test('parallel member requests cannot overrun the remaining daily quota',async t=>{
+ let release,started;const observed=new Promise(r=>started=r);
+ const f=await fixture(t,{providerCaller:async()=>{started();await new Promise(r=>release=r);return {text:'member answer'};}});
+ const {session:admin}=await prepareLongChat(f);
+ await f.request('/api/admin/users',{method:'POST',session:admin,body:{username:'parallel-member',password:'member-password-long-123',dailyLimit:1,allowSharedKeys:true}});
+ const session=await f.login('parallel-member','member-password-long-123');
+ const make=async()=>(await f.request('/api/conversations',{method:'POST',session,body:{provider:'openai'}})).json.conversation.id;
+ const one=await make(),two=await make(),pending=f.request('/api/chat',{method:'POST',session,body:{conversationId:one,message:'first'}});await observed;
+ try {const rejected=await f.request('/api/chat',{method:'POST',session,body:{conversationId:two,message:'second'}});assert.equal(rejected.status,429);assert.equal(rejected.json.error.code,'DAILY_LIMIT');}
+ finally {release();await pending;}
+ assert.equal(f.app.db.prepare('SELECT used FROM usage WHERE user_id=?').get(session.user.id).used,1);
 });

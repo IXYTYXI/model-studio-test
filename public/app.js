@@ -1,4 +1,4 @@
-import { createApi, splitContent, googleAuthorizationUrl, googleLoginError, modelOutputLimit } from './ui-lib.js';
+import { createApi, splitContent, googleAuthorizationUrl, googleLoginError, modelOutputLimit, mergeUsage } from './ui-lib.js';
 import { createChatRequests } from './chat-requests.js';
 import { modelControl, disposeModelControls } from './model-control.js';
 import { selectControl, closeSelect } from './select-control.js';
@@ -122,8 +122,9 @@ async function enterWorkspace(session) {
 function selectedProvider() { return state.session?.providers.find(provider => provider.id === state.provider); }
 function updateQuota() {
   const usage = state.session?.usage || { used: 0, limit: 0 };
-  $('quota-value').textContent = `${usage.used} / ${usage.limit}`;
-  $('quota-progress').max = Math.max(1, usage.limit);
+  $('quota-value').textContent = usage.unlimited ? `${usage.used} 次 · 不限额` : `${usage.used} / ${usage.limit}`;
+  $('quota-progress').hidden = usage.unlimited === true;
+  $('quota-progress').max = Math.max(1, usage.limit || 1);
   $('quota-progress').value = usage.used;
 }
 function updateHeader() {
@@ -181,8 +182,9 @@ async function selectProvider(provider, push = true) {
     const data = await api(`/api/conversations?provider=${encodeURIComponent(provider)}`);
     if (generation !== state.generation || !state.session) return false;
     state.conversations = data.conversations;
-    const task = chatRequests.pending || pendingAtLoad;
-    if (task?.provider === provider && task.conversation) mergeConversation(task.conversation);
+    for (const task of new Set([...pendingAtLoad, ...chatRequests.pending])) {
+      if (task.provider === provider && task.conversation) mergeConversation(task.conversation);
+    }
     state.loading = false;
     renderHistory();
     if (state.activeId && state.conversations.some(item => item.id === state.activeId)) return await openConversation(state.activeId);
@@ -203,21 +205,23 @@ function renderHistory() {
   }
   $('history').replaceChildren(...state.conversations.map(conversation => {
     const row = el('div', `history-item${conversation.id === state.activeId ? ' active' : ''}`);
-    const title = button(conversation.title || '新对话', 'history-title', () => openConversation(conversation.id).catch(reportChatError));
-    title.title = conversation.title || '新对话';
-    if (chatRequests.pending?.id === conversation.id) { title.append(el('span', 'history-pending', '生成中')); title.setAttribute('aria-label', `${conversation.title || '新对话'} · 正在生成`); }
+    const pending = chatRequests.pendingFor(state.provider, conversation.id);
+    const displayTitle = pending && conversation.title === '新对话' ? pending.message.slice(0, 48) : conversation.title || '新对话';
+    const title = button(displayTitle, 'history-title', () => openConversation(conversation.id).catch(reportChatError));
+    title.title = displayTitle;
+    if (pending) { title.append(el('span', 'history-pending', '生成中')); title.setAttribute('aria-label', `${displayTitle} · 正在生成`); }
     if (conversation.id === state.activeId) title.setAttribute('aria-current', 'true');
     const remove = button('×', 'history-delete', () => deleteConversation(conversation).catch(reportChatError));
-    remove.setAttribute('aria-label', `删除对话：${conversation.title || '新对话'}`);
-    remove.disabled = Boolean(chatRequests.pending);
-    if (remove.disabled) remove.title = '当前回复完成后可删除对话';
+    remove.setAttribute('aria-label', `删除对话：${displayTitle}`);
+    remove.disabled = Boolean(chatRequests.pendingFor(state.provider, conversation.id));
+    if (remove.disabled) remove.title = '此对话回复完成后可删除';
     row.append(title, remove);
     return row;
   }));
 }
 async function openConversation(id) {
   saveDraft();
-  const pendingAtLoad = chatRequests.pending;
+  const pendingAtLoad = chatRequests.pendingFor(state.provider, id);
   const generation = ++state.generation;
   state.loading = true;
   updateControls();
@@ -227,7 +231,7 @@ async function openConversation(id) {
     if (generation !== state.generation || !state.session) return false;
     state.activeId = id;
     state.selections[state.provider] = id;
-    if (chatRequests.current?.id === id && !chatRequests.pending) chatRequests.current.noticeSeen = true;
+    chatRequests.acknowledge(chatRequests.forConversation(id));
     state.messages = pendingAtLoad?.id === id && pendingAtLoad.status !== 'pending' ? pendingAtLoad.messages : data.messages;
     restoreDraft();
     renderHistory();
@@ -238,14 +242,14 @@ async function openConversation(id) {
   } finally { if (generation === state.generation && state.session) { state.loading = false; updateControls(); } }
 }
 async function deleteConversation(conversation) {
-  if (chatRequests.pending || !await confirmAction('删除对话', `确定删除「${conversation.title || '新对话'}」？此操作无法撤销。`, '确认删除')) return;
-  if (chatRequests.pending || !state.session) return;
+  if (chatRequests.pendingFor(state.provider, conversation.id) || !await confirmAction('删除对话', `确定删除「${conversation.title || '新对话'}」？此操作无法撤销。`, '确认删除')) return;
+  if (chatRequests.pendingFor(state.provider, conversation.id) || !state.session) return;
   const provider = state.provider, session = state.session;
   await api(`/api/conversations/${encodeURIComponent(conversation.id)}`, { method: 'DELETE' });
   if (state.session !== session) return;
   state.drafts.delete(draftKey(provider, conversation.id));
   state.failures.delete(draftKey(provider, conversation.id));
-  if (chatRequests.current?.id === conversation.id) chatRequests.current.noticeSeen = true;
+  chatRequests.acknowledge(chatRequests.forConversation(conversation.id));
   if (state.selections[provider] === conversation.id) state.selections[provider] = null;
   if (provider !== state.provider) return;
   state.conversations = state.conversations.filter(item => item.id !== conversation.id);
@@ -320,7 +324,7 @@ function renderMessage(message) {
   return article;
 }
 function renderMessages() {
-  const task = chatRequests.pending;
+  const task = currentPending();
   const messages = taskVisible(task) ? [...task.messages, { role: 'user', content: task.message, createdAt: task.createdAt }] : state.messages;
   $('welcome').hidden = messages.length > 0;
   if (!$('welcome').hidden) renderWelcome();
@@ -346,23 +350,53 @@ function taskVisible(task) {
 function mergeConversation(conversation) {
   state.conversations = [conversation, ...state.conversations.filter(item => item.id !== conversation.id)];
 }
+function currentPending() { return chatRequests.pendingFor(state.provider, state.activeId, state.generation); }
+async function openChatTask(task) {
+  try {
+    if (state.provider !== task.provider && !await selectProvider(task.provider)) return;
+    if (!state.session || state.provider !== task.provider) return;
+    if (task.id) { if (!await openConversation(task.id)) return; }
+    else {
+      if (task.status === 'error') state.failures.set(draftKey(task.provider, null), { error: task.error, message: task.message });
+      newConversation();
+    }
+    chatRequests.acknowledge(task); updateControls();
+  } catch (error) { reportChatError(error); }
+}
+function renderBackgroundTasks() {
+  const tasks = chatRequests.tasks.filter(task => !taskVisible(task));
+  const signature = JSON.stringify(tasks.map(task => [task.key, task.id, task.status]));
+  const container = $('background-tasks');
+  container.hidden = !tasks.length;
+  if (container.dataset.signature === signature) return;
+  container.dataset.signature = signature;
+  container.replaceChildren(...tasks.map(task => {
+    const row = el('div', 'background-task');
+    const label = `${themes[task.provider].name} · ${task.message.slice(0, 48)}`;
+    const text = el('div', 'background-task-copy');
+    text.append(el('strong', '', label), el('span', '', task.status === 'pending' ? '正在生成，其他对话可以继续提问' : task.status === 'error' ? '回复失败，原消息已保留' : '回复已完成'));
+    const actions = el('div', 'background-task-actions');
+    const view = button(task.status === 'pending' ? '查看对话' : task.status === 'error' ? '查看详情' : '查看回复', 'secondary-button', () => openChatTask(task));
+    view.setAttribute('aria-label', `${view.textContent}：${label}`);
+    actions.append(view);
+    if (task.status !== 'pending') {
+      const dismiss = button('×', 'icon-button', () => { chatRequests.acknowledge(task); updateControls(); });
+      dismiss.setAttribute('aria-label', `关闭通知：${label}`); actions.append(dismiss);
+    }
+    row.append(text, actions); return row;
+  }));
+}
 function updateControls() {
-  const pending = chatRequests.pending, current = chatRequests.current;
+  const pending = currentPending();
   const provider = selectedProvider();
   const unavailable = !provider?.enabled || !provider?.configured;
   $('send-button').disabled = Boolean(pending) || state.loading || unavailable || !$('prompt').value.trim();
-  $('send-button').title = pending ? '当前回复完成后可继续发送；可以先编辑草稿' : '发送消息';
+  $('send-button').title = pending ? '此对话正在回复，可以切到其他对话继续提问' : '发送消息';
   $('prompt').disabled = state.loading;
   $('new-chat').disabled = false;
-  $('waiting').hidden = !taskVisible(pending);
-  $('send-button').textContent = taskVisible(pending) ? '·' : '↑';
-  for (const node of document.querySelectorAll('.history-delete')) node.disabled = Boolean(pending);
-  const showTask = current && !taskVisible(current) && (pending || !current.noticeSeen);
-  $('background-task').hidden = !showTask;
-  if (showTask) {
-    $('background-task-text').textContent = `${themes[current.provider].name} ${pending ? '正在回复，可浏览其他页面或编辑草稿；完成后可继续发送。' : current.status === 'error' ? '回复失败，原消息已保留。' : '回复已完成。'}`;
-    $('view-background-task').textContent = pending ? '查看对话' : current.status === 'error' ? '查看详情' : '查看回复';
-  }
+  $('waiting').hidden = !pending;
+  $('send-button').textContent = pending ? '·' : '↑';
+  renderBackgroundTasks();
 }
 function chatChanged(task, phase) {
   if (!state.session) return;
@@ -376,7 +410,7 @@ function chatChanged(task, phase) {
   }
   if (task.conversation && task.provider === state.provider) mergeConversation(task.conversation);
   if (phase === 'settled') {
-    if (task.usage) { state.session.usage = task.usage; updateQuota(); }
+    if (task.usage) { state.session.usage = mergeUsage(state.session.usage, task.usage); updateQuota(); }
     const key = draftKey(task.provider, task.id);
     if (task.status === 'error') {
       state.failures.set(key, { error: task.error, message: task.message });
@@ -386,7 +420,7 @@ function chatChanged(task, phase) {
     if (taskVisible(task)) {
       state.messages = task.messages;
       if (task.status === 'error') restoreDraft();
-      task.noticeSeen = true;
+      chatRequests.acknowledge(task);
       renderMessages();
       scrollToBottom();
     }
@@ -398,7 +432,7 @@ function sendChat(event) {
   event.preventDefault();
   const message = $('prompt').value.trim();
   const provider = selectedProvider();
-  if (chatRequests.pending || state.loading || !message || !provider?.enabled || !provider?.configured) return;
+  if (currentPending() || state.loading || !message || !provider?.enabled || !provider?.configured) return;
   state.failures.delete(draftKey());
   state.drafts.set(draftKey(), '');
   restoreDraft();
@@ -510,7 +544,7 @@ async function openSettings(tab = state.settingsTab) {
 }
 function renderProviderSettings(providers, personal = false, allowShared = false) {
   $('settings-content').replaceChildren(el('p', 'settings-intro', personal
-    ? `这里的 API Key 和模型设置仅供你的账号使用。密钥加密保存，保存后不会回显，留空保留已有值；更改 API 地址须重新填写 Key。调用失败或删除密钥都不会自动切换到平台 Key。${allowShared ? '你已获授权，可主动选择平台连接，使用平台额度。' : '需要使用平台连接时，请联系管理员单独授权。'} 自有 Key 同样受本站请求额度限制。`
+    ? `这里的 API Key 和模型设置仅供你的账号使用。密钥加密保存，保存后不会回显，留空保留已有值；更改 API 地址须重新填写 Key。调用失败或删除密钥都不会自动切换到平台 Key。${allowShared ? '你已获授权，可主动选择平台连接，使用平台额度。' : '需要使用平台连接时，请联系管理员单独授权。'} ${state.session.user.role === 'admin' ? '管理员调用仅统计，不限每日次数。' : '自有 Key 同样受本站请求额度限制。'}`
     : '配置平台提供的模型连接。仅管理员和已获授权的成员可使用。由平台管理的 API Key 需通过平台秘密配置更新；API 地址、模型和启用状态仍可在此修改。其他 API Key 保存后不会回显，留空保留已有密钥。'));
   for (const provider of providers) {
     const form = el('form', 'provider-settings-card');
@@ -629,7 +663,7 @@ function renderProviderSettings(providers, personal = false, allowShared = false
   }
 }
 function renderUsers(users) {
-  const intro = el('p', 'settings-intro', '新成员默认使用个人 API Key。仅对你同意承担模型费用的成员开启「允许使用平台连接」。启用 Google 登录时，首次登录自动创建普通成员。个人与平台调用均受每日额度限制（包括上游失败）；暂停账号后无法继续访问。');
+  const intro = el('p', 'settings-intro', '新成员默认使用个人 API Key。仅对你同意承担模型费用的成员开启「允许使用平台连接」。启用 Google 登录时，首次登录自动创建普通成员。普通成员的个人与平台调用均受每日额度限制（包括上游失败）；管理员用量仅统计，不限每日次数。暂停账号后无法继续访问。');
   const create = el('form', 'user-create');
   const grid = el('div', 'fields-grid');
   grid.append(field('用户名', 'username', { required: true, placeholder: '如 team-member', autocomplete: 'off', hint: '2–64 位字母、数字或 . _ @ -' }), field('初始密码', 'password', { type: 'password', required: true, min: 14, max: 128, placeholder: '14–128 个字符', autocomplete: 'new-password' }), field('每日请求额度', 'dailyLimit', { type: 'number', min: 1, max: 10000, value: '50', required: true }));
@@ -657,7 +691,11 @@ function renderUsers(users) {
     heading.append(identity, el('span', 'role-tag', user.role === 'admin' ? '管理员' : '成员'), toggle(isSelf ? '当前账号' : '启用账号', 'enabled', user.enabled, isSelf));
     const grid = el('div', 'fields-grid');
     const passwordField = field(user.passwordEnabled === false ? '设置本地密码（可选）' : '重置密码', 'password', { type: 'password', min: 14, max: 128, placeholder: user.passwordEnabled === false ? '留空继续仅使用 Google 登录' : '留空保持当前密码', autocomplete: 'new-password' });
-    grid.append(field('每日请求额度', 'dailyLimit', { type: 'number', value: String(user.dailyLimit), min: 1, max: 10000, required: true }), passwordField);
+    const limitField = user.role === 'admin'
+      ? field('每日请求额度', 'dailyLimit', { value: '不限额（管理员）', hint: '管理员用量仅统计，不受每日额度和生成请求频率限制。' })
+      : field('每日请求额度', 'dailyLimit', { type: 'number', value: String(user.dailyLimit), min: 1, max: 10000, required: true });
+    if (user.role === 'admin') limitField.querySelector('input').disabled = true;
+    grid.append(limitField, passwordField);
     const footer = formFooter('保存成员');
     footer.append(el('span', 'usage-note', `今日已用 ${user.used} 次`));
     form.append(heading, grid, toggle('允许使用平台连接（消耗平台 Key）', 'allowSharedKeys', user.allowSharedKeys, user.role === 'admin'), footer);
@@ -665,7 +703,7 @@ function renderUsers(users) {
       event.preventDefault();
       formRequest(form, async () => {
         const data = new FormData(form);
-        const payload = { dailyLimit: Number(data.get('dailyLimit')) };
+        const payload = user.role === 'admin' ? {} : { dailyLimit: Number(data.get('dailyLimit')) };
         if (user.role !== 'admin') payload.allowSharedKeys = data.has('allowSharedKeys');
         if (!isSelf) payload.enabled = data.has('enabled');
         if (data.get('password')) payload.password = data.get('password');
@@ -712,16 +750,6 @@ $('chat-form').addEventListener('submit', sendChat);
 $('prompt').addEventListener('input', () => { saveDraft(); updateControls(); });
 $('prompt').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!$('send-button').disabled) $('chat-form').requestSubmit(); } });
 $('new-chat').addEventListener('click', newConversation);
-$('view-background-task').addEventListener('click', async () => {
-  const task = chatRequests.current;
-  if (!task) return;
-  try {
-    if (state.provider !== task.provider && !await selectProvider(task.provider)) return;
-    if (!state.session || state.provider !== task.provider) return;
-    if (task.id) { if (!await openConversation(task.id)) return; } else newConversation();
-    task.noticeSeen = true; updateControls();
-  } catch (error) { reportChatError(error); }
-});
 $('brand-home').addEventListener('click', event => { event.preventDefault(); selectProvider('openai').catch(reportChatError); });
 $('mobile-menu').addEventListener('click', () => { $('sidebar').classList.add('open'); $('sidebar-backdrop').hidden = false; });
 $('sidebar-backdrop').addEventListener('click', closeSidebar);

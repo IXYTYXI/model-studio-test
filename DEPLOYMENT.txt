@@ -73,8 +73,8 @@ BOOTSTRAP_USERNAME：默认 admin，仅用于空数据库首次创建管理员�
 BOOTSTRAP_PASSWORD：14–128 字符，仅用于空数据库初始化；BOOTSTRAP_PASSWORD_FILE 可替代，文件值会去除首尾空白。移除初始化密码后，已有账号使用数据库中的密码哈希登录。
 PUBLIC_ORIGIN：默认 http://localhost:8080；生产必须使用精确 HTTPS origin，不含路径、查询、凭据或片段。
 DATA_DIR：Node 默认 ./data；Compose 强制 /data。
-DEFAULT_DAILY_LIMIT：默认 50，范围 1–10000，用于默认账号额度。
-GLOBAL_DAILY_LIMIT：默认 500，范围 1–100000，限制全站每日已接受的对话请求次数。
+DEFAULT_DAILY_LIMIT：默认 50，范围 1–10000，用于普通成员的默认每日额度，管理员免除。
+GLOBAL_DAILY_LIMIT：默认 500，范围 1–100000，限制普通成员每日已接受的对话请求总数；管理员调用不受限，也不消耗成员的合计额度。
 GOOGLE_CLIENT_ID：可选的 Google Web OAuth Client ID，通常以 .apps.googleusercontent.com 结尾，不属于秘密；必须与 GOOGLE_CLIENT_SECRET 同时配置。两者都未设置时 Google 登录关闭。
 GOOGLE_CLIENT_SECRET：可选的 Google Web OAuth Client Secret；平台用 secretRefs 注入，本机可在 .env 配置，不返回浏览器、不写入应用数据库。不可用模型 API Key 代替；变更后需重启或新部署。
 ALLOW_CUSTOM_API_HOSTS：true 或 false；未设置默认为 false。awesome.yaml 和 .env.example 中为 true，以支持用户只填写第三方公网 HTTPS 地址和 Key。仅允许 443 端口、公共 DNS 解析结果；每次请求校验并固定解析 IP，禁止重定向。
@@ -104,3 +104,5 @@ Docker 场景先 docker compose stop，再由运维将命名卷完整备份；�
 最大输出 Token 改为正安全整数，无统一 4096 截断；新连接默认 8192，已有配置原值不变。列表可读取 Gemini outputTokenLimit、Anthropic max_tokens 以及兼容网关明确的 max_output_tokens，只把有效正整数作为 UI 提示与输入校验；缺省或无效值不推测，不读取 context_length 充当输出上限。服务商仍负责最终参数校验。
 PROVIDER_TIMEOUT_SECONDS：生成请求总截止时间，默认 300，允许 10–1800 秒，包括 DNS、连接和完整响应体。awesome.yaml 明确设置 300。模型列表仍为 20 秒、每页 2 MiB；生成响应体扩为 8 MiB，单条保存文本仍最多 100 万字符。
 长请求每 15 秒输出 JSON 合法空白并设置 X-Accel-Buffering: no，不改变平台全局网关配置，不对外显示不完整模型文本。早期校验与快速失败保留 HTTP 状态码；保活开始后的失败以 HTTP 200 + JSON error.status 返回，内置客户端按逻辑状态处理，401 仍注销本地会话。请勿只检查 HTTP 200 判断聊天成功。关闭连接会取消请求，定时器在成功、失败和断开后均清理，返回答案前再次检查登录状态。
+
+并发与管理员额度：生成锁按 conversation ID 隔离，同账号不同对话和不同模型可以同时生成；运行中会话拒绝重复发送和删除，其余会话不受此锁影响。保留服务总计 4 个生成请求的容量保护。管理员免除账号日额度、成员合计日额度及生成请求每分钟频率限制，用量仍计数。API 中管理员 dailyLimit/usage.limit 为 null，usage.unlimited 为 true；普通成员的数字额度继续有效。

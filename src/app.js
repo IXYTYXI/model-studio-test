@@ -23,7 +23,7 @@ const dailyLimit=value=>{requireValue(Number.isInteger(value)&&value>=1&&value<=
 
 export async function createApp(config,{providerCaller=callProvider,modelLister,googleClient,googleNow,chatHeartbeatMs=15000}={}) {
   const db=await openStore(config,PROVIDER_DEFAULTS),secure=config.publicOrigin.startsWith('https:');
-  const userView=u=>({id:u.id,username:u.username,role:u.role,enabled:!!u.enabled,dailyLimit:u.daily_limit,allowSharedKeys:canUseSharedKeys(u),email:db.prepare('SELECT email FROM google_accounts WHERE user_id=?').get(u.id)?.email||null,passwordEnabled:u.password.startsWith('scrypt:')});
+  const userView=u=>({id:u.id,username:u.username,role:u.role,enabled:!!u.enabled,dailyLimit:u.role==='admin'?null:u.daily_limit,allowSharedKeys:canUseSharedKeys(u),email:db.prepare('SELECT email FROM google_accounts WHERE user_id=?').get(u.id)?.email||null,passwordEnabled:u.password.startsWith('scrypt:')});
   const environmentKey=id=>config.providerKeys?.[id]||'';
   const keySource=p=>environmentKey(p.id)?'environment':p.secret?'stored':'none';
   const providerView=p=>({id:p.id,label:p.label,baseUrl:p.base_url,model:p.model,protocol:p.protocol,enabled:!!p.enabled,hasKey:keySource(p)!=='none',keySource:keySource(p),maxOutputTokens:p.max_output});
@@ -32,9 +32,9 @@ export async function createApp(config,{providerCaller=callProvider,modelLister,
   const loginByIp=new RateLimiter({limit:15,windowMs:600000});
   const loginByUser=new RateLimiter({limit:8,windowMs:600000});
   const chatRate=new RateLimiter({limit:8,windowMs:60000});
-  const busyUsers=new Set(),controllers=new Set();let passwordWork=0;
+  const busyConversations=new Set(),controllers=new Set();let passwordWork=0;
   const fakeHash=await hashPassword(randomToken());
-  const usage=u=>({used:db.prepare('SELECT used FROM usage WHERE user_id=? AND day=?').get(u.id,day())?.used||0,limit:u.daily_limit,day:day()});
+  const usage=u=>({used:db.prepare('SELECT used FROM usage WHERE user_id=? AND day=?').get(u.id,day())?.used||0,limit:u.role==='admin'?null:u.daily_limit,unlimited:u.role==='admin',day:day()});
   const summaries=u=>PROVIDER_DEFAULTS.map(p=>{const active=personal.effective(u,p.id);return {id:p.id,label:p.label,model:active.model,enabled:active.enabled,configured:active.configured,credentialSource:active.credentialSource};});
   const sessionView=(u,csrf)=>({user:userView(u),csrfToken:csrf,providers:summaries(u),usage:usage(u),version:'1.0.0'});
   function authenticated(req) {
@@ -148,7 +148,7 @@ export async function createApp(config,{providerCaller=callProvider,modelLister,
         const hashed=b.password?await passwordTask(()=>hashPassword(b.password)):target.password;
         refreshAuth();
         target=db.prepare('SELECT * FROM users WHERE id=?').get(userMatch[1]);
-        const limit=b.dailyLimit===undefined?target.daily_limit:dailyLimit(b.dailyLimit);
+        const limit=target.role==='admin'||b.dailyLimit===undefined?target.daily_limit:dailyLimit(b.dailyLimit);
         transaction(()=>{db.prepare('UPDATE users SET enabled=?,daily_limit=?,password=?,allow_shared_keys=? WHERE id=?').run(b.enabled===undefined?target.enabled:(b.enabled?1:0),limit,hashed,b.allowSharedKeys===undefined?target.allow_shared_keys:(b.allowSharedKeys?1:0),target.id);
           if(b.enabled===false||b.password)db.prepare('DELETE FROM sessions WHERE user_id=?').run(target.id);});
         return json(res,200,{user:userView(db.prepare('SELECT * FROM users WHERE id=?').get(target.id))});
@@ -168,24 +168,27 @@ export async function createApp(config,{providerCaller=callProvider,modelLister,
       if(cMatch&&['GET','DELETE'].includes(method)) {
         const c=owned(cMatch[1],u);
         if(method==='GET')return json(res,200,thread(c));
-        if(busyUsers.has(u.id))throw new AppError(409,'CHAT_BUSY','请等当前回复完成再删除会话');
+        if(busyConversations.has(c.id))throw new AppError(409,'CHAT_BUSY','请等此对话回复完成再删除');
         db.prepare('DELETE FROM conversations WHERE id=? AND user_id=?').run(c.id,u.id);return json(res,200,{ok:true});
       }
       if(path==='/api/chat'&&method==='POST') {
         const b=await bodyAfterAuth();requireValue(typeof b.conversationId==='string','请选择会话');
         const c=owned(b.conversationId,u);
         requireValue(typeof b.message==='string'&&b.message.trim().length>0&&b.message.length<=16000,'消息须为 1–16000 个字符');
-        if(busyUsers.has(u.id)||busyUsers.size>=4)throw new AppError(429,'CHAT_BUSY','当前请求较多，请稍后再试');
+        if(busyConversations.has(c.id))throw new AppError(429,'CHAT_BUSY','此对话正在生成回复，请等待完成后继续提问');
+        if(busyConversations.size>=4)throw new AppError(429,'SERVER_BUSY','服务当前正在处理较多回复，请稍后重试');
         const p=personal.effective(u,c.provider);
         if(!p.configured)throw new AppError(409,'PROVIDER_NOT_CONFIGURED','请在个人模型设置中配置 API Key 和模型，或联系管理员授权平台连接');
         requireValue(db.prepare('SELECT count(*) AS n FROM messages WHERE conversation_id=?').get(c.id).n<1000,'会话过长，请新建对话');
-        if(!chatRate.take(u.id))throw new AppError(429,'CHAT_RATE_LIMIT','发送过于频繁，请稍后再试');
+        if(u.role!=='admin'&&!chatRate.take(u.id))throw new AppError(429,'CHAT_RATE_LIMIT','发送过于频繁，请稍后再试');
         transaction(()=>{
-          const current=usage(u),global=db.prepare('SELECT coalesce(sum(used),0) AS n FROM usage WHERE day=?').get(day()).n;
-          if(current.used>=u.daily_limit||global>=config.globalDailyLimit)throw new AppError(429,'DAILY_LIMIT','今日调用额度已用完');
+          if(u.role!=='admin') {
+            const current=usage(u),global=db.prepare("SELECT coalesce(sum(usage.used),0) AS n FROM usage JOIN users ON users.id=usage.user_id WHERE usage.day=? AND users.role!='admin'").get(day()).n;
+            if(current.used>=u.daily_limit||global>=config.globalDailyLimit)throw new AppError(429,'DAILY_LIMIT','今日调用额度已用完');
+          }
           db.prepare('INSERT INTO usage(user_id,day,used) VALUES(?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET used=used+1').run(u.id,day());
         });
-        busyUsers.add(u.id);const controller=new AbortController();controllers.add(controller);
+        busyConversations.add(c.id);const controller=new AbortController();controllers.add(controller);
         const stopHeartbeat=startJsonHeartbeat(res,{intervalMs:chatHeartbeatMs});
         const cancel=()=>{if(!res.writableEnded)controller.abort();};res.on('close',cancel);
         try {
@@ -209,7 +212,7 @@ export async function createApp(config,{providerCaller=callProvider,modelLister,
           transaction(()=>{const insert=db.prepare('INSERT INTO messages(conversation_id,role,content,created_at) VALUES(?,?,?,?)');insert.run(c.id,'user',b.message.trim(),now);insert.run(c.id,'assistant',answer.text,now);
             db.prepare('UPDATE conversations SET title=?,updated_at=? WHERE id=?').run(c.title==='新对话'?b.message.trim().slice(0,48):c.title,now,c.id);});
           return json(res,200,{...thread(owned(c.id,u)),usage:usage(u)});
-        } finally {stopHeartbeat();res.off('close',cancel);busyUsers.delete(u.id);controllers.delete(controller);}
+        } finally {stopHeartbeat();res.off('close',cancel);busyConversations.delete(c.id);controllers.delete(controller);}
       }
       throw new AppError(404,'NOT_FOUND','接口不存在');
     }

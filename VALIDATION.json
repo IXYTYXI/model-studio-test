@@ -3,7 +3,7 @@
   "verifiedOn": "2026-10-16",
   "runtime": "Node.js 24.13.0",
   "automatedTests": {
-    "passed": 187,
+    "passed": 192,
     "failed": 0,
     "command": "npm test"
   },
@@ -120,6 +120,25 @@
         "Mobile sidebar navigation, notice and failed-message details fit viewport",
         "Native Safari switches to Claude and permits draft editing while Codex waits"
       ]
+    },
+    "concurrentConversations": {
+      "verifiedOn": "2026-10-16",
+      "method": "Disposable localhost Node fixture with independently delayed and failed mock replies; no real provider calls",
+      "browsers": [
+        "Codex in-app browser"
+      ],
+      "viewports": [
+        "1280x720",
+        "390x844"
+      ],
+      "checks": [
+        "Four simultaneous conversations on one account, across all three providers and two conversations on Codex",
+        "Out-of-order completion retains correct origin messages and monotonic usage statistics",
+        "Admin with 50 seeded calls continues to 56; quota UI shows unlimited and member editor disables admin quota",
+        "Background failure preserves original message and later draft while Gemini independently finishes",
+        "Multiple completion and failure notifications link to their own conversations",
+        "Mobile notifications and composer fit 390px viewport; no browser error or warning logs"
+      ]
     }
   },
   "notVerified": [
@@ -138,14 +157,14 @@
     "upgrade": "legacy users and conversations retained; revoked shared permission survives restart"
   },
   "priorPublicRelease": {
-    "commit": "03e1fa7fcfd12ef35dc3f464fd7b3baa4a054412",
-    "jobId": "8ceb17ecb7984f9ca7a5d269431e8e2c",
+    "commit": "41f77d0c28f321086bbd277099dfe979c6fba16d",
+    "jobId": "55e0633b6886453ba1e4700fc0b708e3",
     "origin": "https://chatstd.awesome.guanghexinzhi.cn",
     "checks": [
       "TLS and health passed",
       "Published assets matched commit",
       "Persistent data volume and secret versions retained"
     ],
-    "scope": "Completed output-limit release; navigation fix deployment recorded separately in operator evidence."
+    "scope": "Completed navigation release; concurrent conversation deployment recorded separately in operator evidence."
   }
 }

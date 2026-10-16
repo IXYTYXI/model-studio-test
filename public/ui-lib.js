@@ -63,3 +63,11 @@ export function splitContent(value) {
   if (start < content.length || !parts.length) parts.push({ type: 'text', content: content.slice(start) });
   return parts;
 }
+
+// Responses from parallel requests may arrive in a different order.
+export function mergeUsage(current, incoming) {
+  if (!incoming) return current;
+  if (!current || incoming.day > current.day) return incoming;
+  if (incoming.day < current.day) return current;
+  return {...incoming, used: Math.max(current.used, incoming.used)};
+}

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,randomUUID} from 'node:crypto';
 import {createApp} from '../src/app.js';
 import {readConfig} from '../src/config.js';
 
@@ -135,7 +135,10 @@ test('Google members obey the existing daily user and site quotas before any pro
   const admin=f.app.db.prepare('SELECT id FROM users WHERE role=?').get('admin');
   f.app.db.prepare('UPDATE providers SET enabled=1,model=? WHERE id=?').run('fixture-model','openai');
   f.app.db.prepare('INSERT INTO usage(user_id,day,used) VALUES(?,?,?)').run(user.id,session.usage.day,49);
-  f.app.db.prepare('INSERT INTO usage(user_id,day,used) VALUES(?,?,?)').run(admin.id,session.usage.day,449);
+  const otherMember=randomUUID();
+  f.app.db.prepare('INSERT INTO users(id,username,password,role,daily_limit,created_at) SELECT ?,?,password,?,?,created_at FROM users WHERE id=?').run(otherMember,'other-quota-member','member',500,admin.id);
+  f.app.db.prepare('INSERT INTO usage(user_id,day,used) VALUES(?,?,?)').run(otherMember,session.usage.day,449);
+  f.app.db.prepare('INSERT INTO usage(user_id,day,used) VALUES(?,?,?)').run(admin.id,session.usage.day,9000);
   const created=await f.request('/api/conversations',{method:'POST',cookie,csrf,body:{provider:'openai'}});
   assert.equal(created.status,201);
   const chat=()=>f.request('/api/chat',{method:'POST',cookie,csrf,body:{conversationId:created.json.conversation.id,message:'hello'}});

@@ -1,7 +1,8 @@
 // A request belongs to its conversation, independently of the visible page.
 export function createChatRequests({api,onChange=()=>{}}) {
-  let current=null;
-  const valid=task=>current===task&&!task.controller.signal.aborted;
+  const tasks=new Map();let sequence=0;
+  const valid=task=>tasks.get(task.key)===task&&!task.controller.signal.aborted;
+  const pendingFor=(provider,id,originGeneration)=>[...tasks.values()].find(task=>task.status==='pending'&&task.provider===provider&&(id?task.id===id:!task.id&&task.originGeneration===originGeneration))||null;
   async function run(task) {
     const options={signal:task.controller.signal};
     try {
@@ -20,6 +21,7 @@ export function createChatRequests({api,onChange=()=>{}}) {
       // A lost response can still have committed on the server. Reconcile the
       // original conversation, never whichever page is now visible.
       if(task.id)try {const result=await api(`/api/conversations/${encodeURIComponent(task.id)}`,options);if(valid(task))task.messages=result.messages;}catch { /* Retain the previously committed messages. */ }
+      if(!valid(task))return;
       try {const session=await api('/api/session',options);if(valid(task))task.usage=session.usage;}catch { /* Keep the original error. */ }
       if(!valid(task))return;
       task.status='error';
@@ -27,13 +29,17 @@ export function createChatRequests({api,onChange=()=>{}}) {
     if(valid(task))onChange(task,'settled');
   }
   return {
-    get current(){return current;},
-    get pending(){return current?.status==='pending'?current:null;},
+    get tasks(){return [...tasks.values()];},
+    get pending(){return [...tasks.values()].filter(task=>task.status==='pending');},
+    pendingFor,
+    forConversation(id){return [...tasks.values()].find(task=>task.id===id)||null;},
+    acknowledge(task){if(task&&task.status!=='pending'){task.noticeSeen=true;tasks.delete(task.key);}},
     start({provider,conversationId=null,message,messages=[],originGeneration}) {
-      if(current?.status==='pending')throw new Error('已有对话正在生成回复');
-      const task={provider,id:conversationId,message,messages:[...messages],originGeneration,status:'pending',controller:new AbortController(),createdAt:new Date().toISOString()};
-      current=task;onChange(task,'started');task.done=run(task);return task;
+      if(pendingFor(provider,conversationId,originGeneration))throw new Error('此对话正在生成回复');
+      for(const task of tasks.values())if(conversationId&&task.id===conversationId&&task.status!=='pending')tasks.delete(task.key);
+      const task={key:++sequence,provider,id:conversationId,message,messages:[...messages],originGeneration,status:'pending',controller:new AbortController(),createdAt:new Date().toISOString()};
+      tasks.set(task.key,task);onChange(task,'started');task.done=run(task);return task;
     },
-    clear(){current?.controller.abort();current=null;}
+    clear(){for(const task of tasks.values())task.controller.abort();tasks.clear();}
   };
 }

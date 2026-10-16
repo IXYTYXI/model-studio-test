@@ -82,3 +82,13 @@ test('output metadata applies only to the exact selected model and never guesses
  for(const id of ['unknown','bad','manual','Large'])assert.equal(ui.modelOutputLimit(models,id),null);
  assert.equal(ui.modelOutputLimit([], 'large'),null);
 });
+
+
+test('parallel usage responses never move the counter backwards or restore an old day',()=>{
+ const current={used:7,limit:null,unlimited:true,day:'2026-10-16'};
+ assert.equal(typeof ui.mergeUsage,'function');
+ assert.equal(ui.mergeUsage(current,{...current,used:3}).used,7);
+ assert.equal(ui.mergeUsage(current,{...current,used:8}).used,8);
+ assert.equal(ui.mergeUsage(current,{...current,day:'2026-10-15',used:99}).used,7);
+ assert.equal(ui.mergeUsage(current,{...current,day:'2026-10-17',used:1}).used,1);
+});
