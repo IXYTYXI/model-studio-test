@@ -182,3 +182,19 @@ test('session revoked during a heartbeat response never receives or saves the an
  f.app.db.exec('DELETE FROM sessions');resolve({text:'private late reply'});const data=await response.json();
  assert.equal(data.error.status,401);assert.doesNotMatch(JSON.stringify(data),/private late reply/);assert.equal(f.app.db.prepare('SELECT count(*) AS n FROM messages').get().n,0);
 });
+
+test('pending generation allows history, settings and new conversation reads without mixing replies',async t=>{
+ let release,started;const waiting=new Promise(resolve=>started=resolve);
+ const f=await fixture(t,{providerCaller:async()=>{started();await new Promise(resolve=>release=resolve);return {text:'original conversation only'};}});
+ const {session,body}=await prepareLongChat(f);
+ const pending=f.request('/api/chat',{method:'POST',session,body});await waiting;
+ let other;
+ try {
+  for(const path of ['/api/conversations?provider=gemini','/api/conversations/'+body.conversationId,'/api/session','/api/account/providers'])assert.equal((await f.request(path,{session})).status,200,path);
+  const created=await f.request('/api/conversations',{method:'POST',session,body:{provider:'gemini'}});assert.equal(created.status,201);other=created.json.conversation.id;
+  assert.equal((await f.request('/api/conversations/'+other,{session})).json.messages.length,0);
+ } finally {release();}
+ const result=await pending;assert.equal(result.json.conversation.id,body.conversationId);
+ assert.equal((await f.request('/api/conversations/'+other,{session})).json.messages.length,0);
+ assert.equal((await f.request('/api/conversations/'+body.conversationId,{session})).json.messages.at(-1).content,'original conversation only');
+});

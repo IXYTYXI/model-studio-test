@@ -14,7 +14,7 @@
     "gatewayRoutesAndRendering": "passed; synthetic port used only for rendering",
     "optionalGoogleSecretReference": "passed with client ID env and GOOGLE_CLIENT_SECRET secretRef enabled in validation-only copy",
     "currentRemoteManifestValidation": "passed against current platform settings and previous release manifest",
-    "intendedRuntimeManifestChange": "Only PROVIDER_TIMEOUT_SECONDS=300; existing public-https-v1 policy, custom-host support and secret references retained"
+    "intendedRuntimeManifestChange": "None; manifest, network policy, secret references and storage unchanged"
   },
   "fileSha256": {
     "awesome.yaml": "3c25c3625da5a2b165aa15f8cdb37040fd079c523d5bdc376cecd776fde56dd7",
@@ -31,7 +31,7 @@
   },
   "platformVersion": "0.7.0",
   "priorPublicRelease": {
-    "jobId": "3a083d9be75b467581cee508736b11c4",
+    "jobId": "8ceb17ecb7984f9ca7a5d269431e8e2c",
     "status": "succeeded",
     "note": "Domain/TLS, rootless runtime and persistent volume verified for prior release; each new commit must complete its own platform deployment."
   }

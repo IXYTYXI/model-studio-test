@@ -1,4 +1,5 @@
 import { createApi, splitContent, googleAuthorizationUrl, googleLoginError, modelOutputLimit } from './ui-lib.js';
+import { createChatRequests } from './chat-requests.js';
 import { modelControl, disposeModelControls } from './model-control.js';
 import { selectControl, closeSelect } from './select-control.js';
 
@@ -24,9 +25,10 @@ const themes = {
   ] }
 };
 const routeProvider = () => Object.keys(themes).find(id => themes[id].route === location.pathname) || 'openai';
-const state = { session: null, provider: routeProvider(), activeId: null, conversations: [], messages: [], busy: false, loading: false, generation: 0, selections: {}, settingsTab: 'personal', googleEnabled: false, loginPending: false };
+const state = { session: null, provider: routeProvider(), activeId: null, conversations: [], messages: [], drafts: new Map(), failures: new Map(), loading: false, generation: 0, selections: {}, settingsTab: 'personal', googleEnabled: false, loginPending: false };
 let toastTimer, settingsRequest = 0;
 const api = createApi({ getToken: () => state.session?.csrfToken || '', onUnauthorized: () => showLogin('登录已过期，请重新登录。') });
+const chatRequests = createChatRequests({ api, onChange: chatChanged });
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -86,7 +88,9 @@ function showLogin(message = '', success = false) {
   state.messages = [];
   state.selections = {};
   state.activeId = null;
-  state.busy = false;
+  chatRequests.clear();
+  state.drafts.clear();
+  state.failures.clear();
   state.loading = false;
   $('boot').hidden = true;
   $('workspace').hidden = true;
@@ -152,36 +156,37 @@ function renderNav() {
     link.href = theme.route;
     if (id === state.provider) link.setAttribute('aria-current', 'page');
     link.append(el('span', 'provider-icon', theme.symbol), el('span', '', theme.name), el('small', '', theme.badge));
-    link.addEventListener('click', event => { event.preventDefault(); if (!state.busy) selectProvider(id).catch(reportChatError); });
-    link.setAttribute('aria-disabled', String(state.busy));
+    link.addEventListener('click', event => { event.preventDefault(); selectProvider(id).catch(reportChatError); });
     return link;
   }));
 }
 function closeSidebar() { $('sidebar').classList.remove('open'); $('sidebar-backdrop').hidden = true; }
 async function selectProvider(provider, push = true) {
-  if (state.busy) return;
+  saveDraft();
   state.provider = provider;
   state.activeId = state.selections[provider] || null;
   state.messages = [];
   state.conversations = [];
   state.loading = true;
   const generation = ++state.generation;
+  const pendingAtLoad = chatRequests.pending;
   if (push && location.pathname !== themes[provider].route) history.pushState({}, '', themes[provider].route);
   else if (!Object.values(themes).some(theme => theme.route === location.pathname)) history.replaceState({}, '', themes[provider].route);
   closeSidebar();
-  $('prompt').value = '';
-  showError($('chat-error'));
+  restoreDraft();
   updateHeader();
   renderMessages();
   $('history').replaceChildren(el('p', 'history-empty', '正在加载对话…'));
   try {
     const data = await api(`/api/conversations?provider=${encodeURIComponent(provider)}`);
-    if (generation !== state.generation || !state.session) return;
+    if (generation !== state.generation || !state.session) return false;
     state.conversations = data.conversations;
+    const task = chatRequests.pending || pendingAtLoad;
+    if (task?.provider === provider && task.conversation) mergeConversation(task.conversation);
     state.loading = false;
     renderHistory();
-    if (state.activeId && data.conversations.some(item => item.id === state.activeId)) await openConversation(state.activeId);
-    else { state.activeId = null; state.selections[provider] = null; renderMessages(); }
+    if (state.activeId && state.conversations.some(item => item.id === state.activeId)) return await openConversation(state.activeId);
+    else { state.activeId = null; state.selections[provider] = null; restoreDraft(); renderMessages(); return true; }
   } catch (error) {
     if (generation === state.generation && state.session) {
       state.loading = false;
@@ -200,55 +205,62 @@ function renderHistory() {
     const row = el('div', `history-item${conversation.id === state.activeId ? ' active' : ''}`);
     const title = button(conversation.title || '新对话', 'history-title', () => openConversation(conversation.id).catch(reportChatError));
     title.title = conversation.title || '新对话';
-    title.disabled = state.busy;
+    if (chatRequests.pending?.id === conversation.id) { title.append(el('span', 'history-pending', '生成中')); title.setAttribute('aria-label', `${conversation.title || '新对话'} · 正在生成`); }
     if (conversation.id === state.activeId) title.setAttribute('aria-current', 'true');
     const remove = button('×', 'history-delete', () => deleteConversation(conversation).catch(reportChatError));
     remove.setAttribute('aria-label', `删除对话：${conversation.title || '新对话'}`);
-    remove.disabled = state.busy;
+    remove.disabled = Boolean(chatRequests.pending);
+    if (remove.disabled) remove.title = '当前回复完成后可删除对话';
     row.append(title, remove);
     return row;
   }));
 }
 async function openConversation(id) {
-  if (state.busy) return;
+  saveDraft();
+  const pendingAtLoad = chatRequests.pending;
   const generation = ++state.generation;
   state.loading = true;
   updateControls();
   showError($('chat-error'));
   try {
     const data = await api(`/api/conversations/${encodeURIComponent(id)}`);
-    if (generation !== state.generation || !state.session) return;
+    if (generation !== state.generation || !state.session) return false;
     state.activeId = id;
     state.selections[state.provider] = id;
-    state.messages = data.messages;
-    $('prompt').value = '';
+    if (chatRequests.current?.id === id && !chatRequests.pending) chatRequests.current.noticeSeen = true;
+    state.messages = pendingAtLoad?.id === id && pendingAtLoad.status !== 'pending' ? pendingAtLoad.messages : data.messages;
+    restoreDraft();
     renderHistory();
     renderMessages();
     closeSidebar();
     scrollToBottom();
+    return true;
   } finally { if (generation === state.generation && state.session) { state.loading = false; updateControls(); } }
 }
 async function deleteConversation(conversation) {
-  if (state.busy || !await confirmAction('删除对话', `确定删除「${conversation.title || '新对话'}」？此操作无法撤销。`, '确认删除')) return;
-  if (state.busy || !state.session) return;
-  const provider = state.provider;
+  if (chatRequests.pending || !await confirmAction('删除对话', `确定删除「${conversation.title || '新对话'}」？此操作无法撤销。`, '确认删除')) return;
+  if (chatRequests.pending || !state.session) return;
+  const provider = state.provider, session = state.session;
   await api(`/api/conversations/${encodeURIComponent(conversation.id)}`, { method: 'DELETE' });
+  if (state.session !== session) return;
+  state.drafts.delete(draftKey(provider, conversation.id));
+  state.failures.delete(draftKey(provider, conversation.id));
+  if (chatRequests.current?.id === conversation.id) chatRequests.current.noticeSeen = true;
   if (state.selections[provider] === conversation.id) state.selections[provider] = null;
   if (provider !== state.provider) return;
   state.conversations = state.conversations.filter(item => item.id !== conversation.id);
-  if (state.activeId === conversation.id) { state.activeId = null; state.messages = []; renderMessages(); }
+  if (state.activeId === conversation.id) { state.activeId = null; state.messages = []; restoreDraft(); renderMessages(); updateControls(); }
   renderHistory();
   toast('对话已删除');
 }
 function newConversation() {
-  if (state.busy) return;
+  saveDraft();
   ++state.generation;
   state.loading = false;
   state.activeId = null;
   state.selections[state.provider] = null;
   state.messages = [];
-  $('prompt').value = '';
-  showError($('chat-error'));
+  restoreDraft();
   renderHistory();
   renderMessages();
   updateControls();
@@ -308,76 +320,89 @@ function renderMessage(message) {
   return article;
 }
 function renderMessages() {
-  $('welcome').hidden = state.messages.length > 0;
+  const task = chatRequests.pending;
+  const messages = taskVisible(task) ? [...task.messages, { role: 'user', content: task.message, createdAt: task.createdAt }] : state.messages;
+  $('welcome').hidden = messages.length > 0;
   if (!$('welcome').hidden) renderWelcome();
-  $('messages').hidden = !state.messages.length;
-  $('messages').replaceChildren(...state.messages.map(renderMessage));
-  $('context-count').textContent = state.messages.length;
+  $('messages').hidden = !messages.length;
+  $('messages').replaceChildren(...messages.map(renderMessage));
+  $('context-count').textContent = messages.length;
   $('context-name').textContent = state.conversations.find(item => item.id === state.activeId)?.title || (state.messages.length ? '正在交流' : '准备开始');
 }
 function scrollToBottom() { requestAnimationFrame(() => { $('conversation-scroll').scrollTop = $('conversation-scroll').scrollHeight; }); }
+function draftKey(provider = state.provider, id = state.activeId) { return `${provider}:${id || 'new'}`; }
+function saveDraft() { if (state.session && !state.loading) state.drafts.set(draftKey(), $('prompt').value); }
+function restoreDraft() {
+  $('prompt').value = state.drafts.get(draftKey()) || '';
+  const failure = state.failures.get(draftKey());
+  showError($('chat-error'), failure?.error || '');
+  $('failed-message').hidden = !failure;
+  $('failed-message-text').textContent = failure?.message || '';
+  $('failed-message').open = false;
+}
+function taskVisible(task) {
+  return Boolean(task && task.provider === state.provider && (task.id ? task.id === state.activeId : state.activeId === null && task.originGeneration === state.generation));
+}
+function mergeConversation(conversation) {
+  state.conversations = [conversation, ...state.conversations.filter(item => item.id !== conversation.id)];
+}
 function updateControls() {
+  const pending = chatRequests.pending, current = chatRequests.current;
   const provider = selectedProvider();
   const unavailable = !provider?.enabled || !provider?.configured;
-  $('send-button').disabled = state.busy || state.loading || unavailable || !$('prompt').value.trim();
-  $('prompt').disabled = state.busy || state.loading;
-  $('new-chat').disabled = state.busy || state.loading;
-  $('waiting').hidden = !state.busy;
-  $('send-button').textContent = state.busy ? '·' : '↑';
-  for (const node of document.querySelectorAll('.history-title,.history-delete,.prompt-card')) node.disabled = state.busy;
-  for (const node of document.querySelectorAll('.provider-link')) node.setAttribute('aria-disabled', String(state.busy));
+  $('send-button').disabled = Boolean(pending) || state.loading || unavailable || !$('prompt').value.trim();
+  $('send-button').title = pending ? '当前回复完成后可继续发送；可以先编辑草稿' : '发送消息';
+  $('prompt').disabled = state.loading;
+  $('new-chat').disabled = false;
+  $('waiting').hidden = !taskVisible(pending);
+  $('send-button').textContent = taskVisible(pending) ? '·' : '↑';
+  for (const node of document.querySelectorAll('.history-delete')) node.disabled = Boolean(pending);
+  const showTask = current && !taskVisible(current) && (pending || !current.noticeSeen);
+  $('background-task').hidden = !showTask;
+  if (showTask) {
+    $('background-task-text').textContent = `${themes[current.provider].name} ${pending ? '正在回复，可浏览其他页面或编辑草稿；完成后可继续发送。' : current.status === 'error' ? '回复失败，原消息已保留。' : '回复已完成。'}`;
+    $('view-background-task').textContent = pending ? '查看对话' : current.status === 'error' ? '查看详情' : '查看回复';
+  }
+}
+function chatChanged(task, phase) {
+  if (!state.session) return;
+  if (phase === 'created') {
+    if (task.provider === state.provider && task.originGeneration === state.generation && state.activeId === null) {
+      saveDraft();
+      const draft = state.drafts.get(draftKey()); state.drafts.delete(draftKey());
+      state.activeId = task.id; state.selections[task.provider] = task.id;
+      state.drafts.set(draftKey(), draft || '');
+    }
+  }
+  if (task.conversation && task.provider === state.provider) mergeConversation(task.conversation);
+  if (phase === 'settled') {
+    if (task.usage) { state.session.usage = task.usage; updateQuota(); }
+    const key = draftKey(task.provider, task.id);
+    if (task.status === 'error') {
+      state.failures.set(key, { error: task.error, message: task.message });
+      if (taskVisible(task)) saveDraft();
+      if (!state.drafts.get(key)) state.drafts.set(key, task.message);
+    }
+    if (taskVisible(task)) {
+      state.messages = task.messages;
+      if (task.status === 'error') restoreDraft();
+      task.noticeSeen = true;
+      renderMessages();
+      scrollToBottom();
+    }
+  } else if (taskVisible(task)) { renderMessages(); scrollToBottom(); }
+  renderHistory(); updateControls();
 }
 function reportChatError(error) { if (state.session) showError($('chat-error'), error.message); }
-async function sendChat(event) {
+function sendChat(event) {
   event.preventDefault();
   const message = $('prompt').value.trim();
   const provider = selectedProvider();
-  if (state.busy || state.loading || !message || !provider?.enabled || !provider?.configured) return;
-  const generation = state.generation;
-  state.busy = true;
-  showError($('chat-error'));
-  updateControls();
-  try {
-    if (!state.activeId) {
-      const result = await api('/api/conversations', { method: 'POST', body: { provider: state.provider } });
-      if (generation !== state.generation || !state.session) return;
-      state.activeId = result.conversation.id;
-      state.selections[state.provider] = state.activeId;
-      state.conversations.unshift(result.conversation);
-    }
-    state.messages.push({ role: 'user', content: message, createdAt: new Date().toISOString() });
-    $('prompt').value = '';
-    renderMessages();
-    renderHistory();
-    scrollToBottom();
-    const result = await api('/api/chat', { method: 'POST', body: { conversationId: state.activeId, message } });
-    if (generation !== state.generation || !state.session) return;
-    state.messages = result.messages;
-    state.session.usage = result.usage;
-    state.conversations = [result.conversation, ...state.conversations.filter(item => item.id !== result.conversation.id)];
-    renderMessages();
-    renderHistory();
-    updateQuota();
-    scrollToBottom();
-  } catch (error) {
-    if (generation !== state.generation || !state.session) return;
-    $('prompt').value = message;
-    reportChatError(error);
-    if (state.activeId) {
-      try {
-        const result = await api(`/api/conversations/${encodeURIComponent(state.activeId)}`);
-        if (generation !== state.generation || !state.session) return;
-        state.messages = result.messages;
-        renderMessages();
-      } catch { /* Keep the visible error when reconciliation is unavailable. */ }
-    }
-    if (generation === state.generation && state.session) {
-      try { const session = await api('/api/session'); if (generation === state.generation && state.session) { state.session = session; updateQuota(); } } catch { /* The original request error stays visible. */ }
-    }
-  } finally {
-    if (generation === state.generation) state.busy = false;
-    if (generation === state.generation && state.session) { updateControls(); renderHistory(); $('prompt').focus(); }
-  }
+  if (chatRequests.pending || state.loading || !message || !provider?.enabled || !provider?.configured) return;
+  state.failures.delete(draftKey());
+  state.drafts.set(draftKey(), '');
+  restoreDraft();
+  chatRequests.start({ provider: state.provider, conversationId: state.activeId, message, messages: state.messages, originGeneration: state.generation });
 }
 
 function field(labelText, name, { value = '', type = 'text', placeholder = '', required = false, min, max, options, hint, wide = false, autocomplete = 'off' } = {}) {
@@ -684,10 +709,20 @@ $('google-login-button').addEventListener('click', async () => {
   finally { setLoginBusy(false); }
 });
 $('chat-form').addEventListener('submit', sendChat);
-$('prompt').addEventListener('input', updateControls);
+$('prompt').addEventListener('input', () => { saveDraft(); updateControls(); });
 $('prompt').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!$('send-button').disabled) $('chat-form').requestSubmit(); } });
 $('new-chat').addEventListener('click', newConversation);
-$('brand-home').addEventListener('click', event => { event.preventDefault(); if (!state.busy) selectProvider('openai').catch(reportChatError); });
+$('view-background-task').addEventListener('click', async () => {
+  const task = chatRequests.current;
+  if (!task) return;
+  try {
+    if (state.provider !== task.provider && !await selectProvider(task.provider)) return;
+    if (!state.session || state.provider !== task.provider) return;
+    if (task.id) { if (!await openConversation(task.id)) return; } else newConversation();
+    task.noticeSeen = true; updateControls();
+  } catch (error) { reportChatError(error); }
+});
+$('brand-home').addEventListener('click', event => { event.preventDefault(); selectProvider('openai').catch(reportChatError); });
 $('mobile-menu').addEventListener('click', () => { $('sidebar').classList.add('open'); $('sidebar-backdrop').hidden = false; });
 $('sidebar-backdrop').addEventListener('click', closeSidebar);
 $('settings-button').addEventListener('click', () => openSettings('providers'));
@@ -739,7 +774,6 @@ $('password-form').addEventListener('submit', async event => {
 });
 window.addEventListener('popstate', () => {
   if (!state.session) return;
-  if (state.busy) { history.pushState({}, '', themes[state.provider].route); return; }
   selectProvider(routeProvider(), false).catch(reportChatError);
 });
 document.addEventListener('keydown', event => { if (event.key === 'Escape') closeSidebar(); });

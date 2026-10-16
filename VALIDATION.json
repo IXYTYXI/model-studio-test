@@ -3,7 +3,7 @@
   "verifiedOn": "2026-10-16",
   "runtime": "Node.js 24.13.0",
   "automatedTests": {
-    "passed": 179,
+    "passed": 187,
     "failed": 0,
     "command": "npm test"
   },
@@ -99,6 +99,27 @@
         "Mobile token input, hint and buttons fit viewport; header remains visible",
         "No console errors or warnings"
       ]
+    },
+    "backgroundNavigation": {
+      "verifiedOn": "2026-10-16",
+      "method": "Disposable Node server with 25-second mock generation; no real model credentials or calls",
+      "browsers": [
+        "Native Safari",
+        "Codex in-app browser"
+      ],
+      "viewports": [
+        "1280x720",
+        "390x844"
+      ],
+      "checks": [
+        "Switch workspaces, open history and use browser Back during generation",
+        "Original prompt and pending status remain in origin conversation",
+        "Completion notification returns to correct conversation with reply",
+        "Drafts remain separate across new workspace views and historical conversations",
+        "Background timeout preserves later draft and original failed message separately",
+        "Mobile sidebar navigation, notice and failed-message details fit viewport",
+        "Native Safari switches to Claude and permits draft editing while Codex waits"
+      ]
     }
   },
   "notVerified": [
@@ -117,14 +138,14 @@
     "upgrade": "legacy users and conversations retained; revoked shared permission survives restart"
   },
   "priorPublicRelease": {
-    "commit": "d93854970726bb2cd03f8b4827ab4fc79abd2c49",
-    "jobId": "3a083d9be75b467581cee508736b11c4",
+    "commit": "03e1fa7fcfd12ef35dc3f464fd7b3baa4a054412",
+    "jobId": "8ceb17ecb7984f9ca7a5d269431e8e2c",
     "origin": "https://chatstd.awesome.guanghexinzhi.cn",
     "checks": [
       "TLS and health passed",
       "Published assets matched commit",
       "Persistent data volume and secret versions retained"
     ],
-    "scope": "Completed model-discovery release; current output-limit deployment recorded separately in operator evidence."
+    "scope": "Completed output-limit release; navigation fix deployment recorded separately in operator evidence."
   }
 }
