@@ -245,3 +245,42 @@ test('parallel member requests cannot overrun the remaining daily quota',async t
  finally {release();await pending;}
  assert.equal(f.app.db.prepare('SELECT used FROM usage WHERE user_id=?').get(session.user.id).used,1);
 });
+
+for(const role of ['admin','member'])test(`${role} generation is not capped at four concurrent conversations`,async t=>{
+ const releases=[],started=new Map(),count=role==='admin'?12:8;
+ const f=await fixture(t,{providerCaller:async(p,m)=>{const message=m.at(-1).content;started.get(message)?.();await new Promise(resolve=>releases.push(resolve));return {text:'reply:'+message};}});
+ const {session:admin}=await prepareLongChat(f);
+ let session=admin;
+ if(role==='member'){
+  const created=await f.request('/api/admin/users',{method:'POST',session:admin,body:{username:'concurrent-member',password:'member-password-long-123',dailyLimit:50,allowSharedKeys:true}});
+  assert.equal(created.status,201);session=await f.login('concurrent-member','member-password-long-123');
+ }
+ const conversations=[];
+ for(let i=0;i<=count;i++){
+  const created=await f.request('/api/conversations',{method:'POST',session,body:{provider:'openai'}});
+  assert.equal(created.status,201);conversations.push(created.json.conversation.id);
+ }
+ const pending=[];
+ try {
+  for(let i=0;i<count;i++){
+   const message='concurrent '+i,observed=new Promise(resolve=>started.set(message,()=>resolve('started')));
+   const response=f.request('/api/chat',{method:'POST',session,body:{conversationId:conversations[i],message}});pending.push(response);
+   assert.equal(await Promise.race([observed,response.then(r=>r.json.error?.code||r.status)]),'started',`request ${i+1} must reach the provider before earlier replies finish`);
+  }
+  assert.equal(releases.length,count);
+  const duplicate=await f.request('/api/chat',{method:'POST',session,body:{conversationId:conversations[0],message:'duplicate'}});
+  assert.equal(duplicate.status,429);assert.equal(duplicate.json.error.code,'CHAT_BUSY');
+  if(role==='member'){
+   const limited=await f.request('/api/chat',{method:'POST',session,body:{conversationId:conversations[count],message:'over member rate'}});
+   assert.equal(limited.status,429);assert.equal(limited.json.error.code,'CHAT_RATE_LIMIT');
+  }
+ } finally {for(const release of releases)release();await Promise.all(pending);}
+ const results=await Promise.all(pending);
+ for(let i=0;i<count;i++){
+  assert.equal(results[i].status,200);assert.equal(results[i].json.conversation.id,conversations[i]);
+  assert.equal(results[i].json.messages.at(-1).content,'reply:concurrent '+i);
+ }
+ assert.equal(f.app.db.prepare('SELECT used FROM usage WHERE user_id=?').get(session.user.id).used,count);
+ // Finishing concurrent requests must release each conversation's own lock.
+ assert.equal((await f.request('/api/conversations/'+conversations[0],{method:'DELETE',session})).status,200);
+});

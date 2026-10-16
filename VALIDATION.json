@@ -3,7 +3,7 @@
   "verifiedOn": "2026-10-16",
   "runtime": "Node.js 24.13.0",
   "automatedTests": {
-    "passed": 192,
+    "passed": 194,
     "failed": 0,
     "command": "npm test"
   },
@@ -157,14 +157,27 @@
     "upgrade": "legacy users and conversations retained; revoked shared permission survives restart"
   },
   "priorPublicRelease": {
-    "commit": "41f77d0c28f321086bbd277099dfe979c6fba16d",
-    "jobId": "55e0633b6886453ba1e4700fc0b708e3",
+    "commit": "26cf1b868d248fbb73dca39e82a2a210d68c07d1",
+    "jobId": "39a5c8a73c3b4595b6e07b64395ae7e2",
     "origin": "https://chatstd.awesome.guanghexinzhi.cn",
     "checks": [
       "TLS and health passed",
       "Published assets matched commit",
       "Persistent data volume and secret versions retained"
     ],
-    "scope": "Completed navigation release; concurrent conversation deployment recorded separately in operator evidence."
+    "scope": "Completed concurrent-conversation release; removal of the global generation cap is recorded separately in operator deployment evidence."
+  },
+  "generationConcurrency": {
+    "verifiedOn": "2026-10-16",
+    "method": "Real HTTP API and disposable SQLite tests with a blocked mock provider; no real provider calls",
+    "applicationWideLimit": null,
+    "administratorLimit": null,
+    "checks": [
+      "12 administrator conversations reach the provider simultaneously, exceeding the previous global limit and member per-minute rate",
+      "8 member conversations run concurrently; ninth request remains subject to the member rate limit",
+      "Each reply belongs to its original conversation; usage counts match accepted requests",
+      "Same-conversation duplicate rejection and lock release preserved",
+      "Existing member daily and global quota tests pass"
+    ]
   }
 }

@@ -176,7 +176,6 @@ export async function createApp(config,{providerCaller=callProvider,modelLister,
         const c=owned(b.conversationId,u);
         requireValue(typeof b.message==='string'&&b.message.trim().length>0&&b.message.length<=16000,'消息须为 1–16000 个字符');
         if(busyConversations.has(c.id))throw new AppError(429,'CHAT_BUSY','此对话正在生成回复，请等待完成后继续提问');
-        if(busyConversations.size>=4)throw new AppError(429,'SERVER_BUSY','服务当前正在处理较多回复，请稍后重试');
         const p=personal.effective(u,c.provider);
         if(!p.configured)throw new AppError(409,'PROVIDER_NOT_CONFIGURED','请在个人模型设置中配置 API Key 和模型，或联系管理员授权平台连接');
         requireValue(db.prepare('SELECT count(*) AS n FROM messages WHERE conversation_id=?').get(c.id).n<1000,'会话过长，请新建对话');

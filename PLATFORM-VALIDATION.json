@@ -31,7 +31,7 @@
   },
   "platformVersion": "0.7.0",
   "priorPublicRelease": {
-    "jobId": "55e0633b6886453ba1e4700fc0b708e3",
+    "jobId": "39a5c8a73c3b4595b6e07b64395ae7e2",
     "status": "succeeded",
     "note": "Domain/TLS, rootless runtime and persistent volume verified for prior release; each new commit must complete its own platform deployment."
   }
