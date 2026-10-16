@@ -3,7 +3,7 @@ const controls=new Set();
 export function disposeModelControls(){for(const control of controls)control.destroy();controls.clear();}
 const node=(tag,cls,text)=>{const n=document.createElement(tag);n.className=cls;if(text!==undefined)n.textContent=text;return n;};
 
-export function modelControl({input,load,onLoaded}) {
+export function modelControl({input,load,onLoaded,onReset}) {
   const root=node('div','model-control'),row=node('div','model-input-row');
   const toggle=node('button','model-toggle','⌄');toggle.type='button';toggle.setAttribute('aria-label','展开模型列表');toggle.disabled=true;
   const fetchButton=node('button','secondary-button model-fetch','获取模型');fetchButton.type='button';
@@ -35,6 +35,7 @@ export function modelControl({input,load,onLoaded}) {
     for(const [index,m] of filtered.entries()){
       const item=node('div','select-option model-option');item.id=input.id+'-model-'+index;item.setAttribute('role','option');item.setAttribute('aria-selected',String(m.id===input.value));
       const label=node('div','model-option-label');label.append(node('span','',m.id));if(m.name!==m.id)label.append(node('small','',m.name));
+      if(Number.isSafeInteger(m.maxOutputTokens)&&m.maxOutputTokens>0)label.append(node('small','','最大输出 '+m.maxOutputTokens.toLocaleString()+' Token'));
       item.append(label,node('span','select-check','✓'));item.lastChild.setAttribute('aria-hidden','true');
       item.addEventListener('pointerdown',event=>event.preventDefault());item.addEventListener('click',()=>choose(index));item.addEventListener('pointermove',()=>highlight(index));menu.append(item);
     }
@@ -52,7 +53,7 @@ export function modelControl({input,load,onLoaded}) {
     root.closest('dialog')?.addEventListener('close',close,opts);render(all);
   }
   function cancel(){sequence++;request?.abort();request=null;fetchButton.textContent='获取模型';root.removeAttribute('aria-busy');}
-  function reset(){cancel();close();models=[];toggle.disabled=true;message('连接信息已更改，请重新获取模型；也可手动填写。');}
+  function reset(){cancel();close();models=[];onReset?.();toggle.disabled=true;message('连接信息已更改，请重新获取模型；也可手动填写。');}
   input.addEventListener('input',()=>open(false));input.addEventListener('click',()=>open());input.addEventListener('blur',close);
   toggle.addEventListener('click',()=>{input.focus({preventScroll:true});menu?close():open();});toggle.addEventListener('pointerdown',event=>event.preventDefault());
   input.addEventListener('keydown',event=>{
@@ -67,7 +68,7 @@ export function modelControl({input,load,onLoaded}) {
   });
   fetchButton.addEventListener('click',async()=>{
     if(request){cancel();message('已取消获取，可重试或手动填写。');return;}
-    close();models=[];toggle.disabled=true;const ticket=++sequence;request=new AbortController();const signal=request.signal;
+    close();models=[];onReset?.();toggle.disabled=true;const ticket=++sequence;request=new AbortController();const signal=request.signal;
     root.setAttribute('aria-busy','true');fetchButton.textContent='取消获取';message('正在获取模型…');
     try {
       const result=await load(signal);

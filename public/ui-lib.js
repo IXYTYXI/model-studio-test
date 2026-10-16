@@ -13,15 +13,21 @@ export function createApi({ getToken = () => '', onUnauthorized = () => {}, fetc
     }
     let data;
     try { data = await response.json(); } catch { throw new Error('服务暂时无法响应，请稍后重试。'); }
-    if (!response.ok) {
-      if (response.status === 401 && !publicLogin) onUnauthorized();
+    if (!response.ok || data?.error) {
+      const status = response.ok && Number.isInteger(data.error?.status) ? data.error.status : response.status;
+      if (status === 401 && !publicLogin) onUnauthorized();
       const error = new Error(data.error?.message || '请求失败，请稍后重试。');
       error.code = data.error?.code;
-      error.status = response.status;
+      error.status = status;
       throw error;
     }
     return data;
   };
+}
+
+export function modelOutputLimit(models, id) {
+  const value = models.find(model => model.id === id)?.maxOutputTokens;
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
 export function googleAuthorizationUrl(value) {

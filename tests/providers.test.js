@@ -34,7 +34,7 @@ test('configuration normalizes trailing slashes, supports explicit gateway roots
   assert.deepEqual(validateProviderConfig('openai', {
     baseUrl: 'https://gateway.example/custom/v1///', model: 'vendor/model-v1', protocol: 'openai-chat', enabled: true,
   }, new Set(['gateway.example'])), {
-    baseUrl: 'https://gateway.example/custom/v1', model: 'vendor/model-v1', protocol: 'openai-chat', enabled: true, maxOutputTokens: 2048,
+    baseUrl: 'https://gateway.example/custom/v1', model: 'vendor/model-v1', protocol: 'openai-chat', enabled: true, maxOutputTokens: 8192,
   });
   assert.equal(validateProviderConfig('gemini', { ...config('gemini'), enabled: false, model: '' }).model, '');
 });
@@ -55,7 +55,7 @@ test('configuration rejects model/path injection, wrong protocol, invalid budget
   for (const model of ['', 'bad model', '../model', 'a?key=x', 'a#x', 'a\\b', 'a\nInjected', 'x'.repeat(161)]) {
     assert.throws(() => validateProviderConfig('openai', config('openai', { model })), safeError('INVALID_PROVIDER_CONFIG'));
   }
-  for (const maxOutputTokens of [127, 4097, 128.1, '2048', null]) assert.throws(() => validateProviderConfig('openai', config('openai', { maxOutputTokens })), safeError('INVALID_PROVIDER_CONFIG'));
+  for (const maxOutputTokens of [0, -1, 128.1, '2048', null, Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => validateProviderConfig('openai', config('openai', { maxOutputTokens })), safeError('INVALID_PROVIDER_CONFIG'));
   assert.throws(() => validateProviderConfig('anthropic', config('anthropic', { protocol: 'unsupported' })), safeError('INVALID_PROVIDER_CONFIG'));
   assert.throws(() => validateProviderConfig('unknown', config()), safeError('INVALID_PROVIDER_CONFIG'));
   assert.throws(() => validateProviderConfig('openai', config('openai', { enabled: 'true' })), safeError('INVALID_PROVIDER_CONFIG'));
@@ -169,7 +169,7 @@ test('upstream redirects are rejected without following or exposing response bod
 });
 
 test('response body limit is enforced while reading', async (t) => {
-  const observed = upstream(t, { chunks: [Buffer.alloc(2 * 1024 * 1024 + 1, 120)] });
+  const observed = upstream(t, { body: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'x'.repeat(8 * 1024 * 1024) }] }] } });
   await assert.rejects(callProvider(config(), messages), safeError('PROVIDER_INVALID_RESPONSE'));
   assert.equal(observed.destroyed, true);
 });
@@ -191,11 +191,11 @@ test('call cancellation destroys an in-progress request and rejects safely', asy
   assert.equal(observed.destroyed, true);
 });
 
-test('total 60 second deadline includes DNS resolution', async (t) => {
+test('total five minute deadline includes DNS resolution', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   t.mock.method(dns, 'lookup', () => new Promise(() => {}));
   const promise = callProvider(config(), messages);
-  t.mock.timers.tick(60_000);
+  t.mock.timers.tick(300_000);
   await assert.rejects(promise, safeError('PROVIDER_TIMEOUT'));
 });
 
@@ -209,13 +209,13 @@ test('malformed JSON, compressed and interrupted responses are rejected safely',
   }
 });
 
-test('exactly 2 MiB of valid JSON succeeds and clears request listeners', async (t) => {
+test('exactly 8 MiB of valid JSON succeeds and clears request listeners', async (t) => {
   const padding = JSON.stringify({ output: [{ type: 'message', content: [{ type: 'output_text', text: '' }] }] });
-  const response = padding.replace('"text":""', `"text":"${'a'.repeat(2 * 1024 * 1024 - Buffer.byteLength(padding))}"`);
+  const response = padding.replace('"text":""', `"text":"${'a'.repeat(8 * 1024 * 1024 - Buffer.byteLength(padding))}"`);
   upstream(t, { chunks: [response] });
   const controller = new AbortController();
   const result = await callProvider(config(), messages, { signal: controller.signal });
-  assert.equal(result.text.length, 2 * 1024 * 1024 - Buffer.byteLength(padding));
+  assert.equal(result.text.length, 8 * 1024 * 1024 - Buffer.byteLength(padding));
   assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
 });
 
@@ -225,7 +225,7 @@ test('a slow body hits the total deadline and destroys both streams', async (t) 
   const controller = new AbortController();
   const promise = callProvider(config(), messages, { signal: controller.signal });
   await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.tick(60_000);
+  t.mock.timers.tick(300_000);
   await assert.rejects(promise, safeError('PROVIDER_TIMEOUT'));
   assert.equal(observed.destroyed, true);
   assert.equal(observed.response.destroyed, true);
@@ -239,7 +239,7 @@ test('late DNS after timeout never sends a request; empty DNS results are reject
   let resolveDns;
   t.mock.method(dns, 'lookup', () => new Promise((resolve) => { resolveDns = resolve; }));
   const promise = callProvider(config(), messages);
-  t.mock.timers.tick(60_000);
+  t.mock.timers.tick(300_000);
   await assert.rejects(promise, safeError('PROVIDER_TIMEOUT'));
   resolveDns([{ address: '93.184.216.34', family: 4 }]);
   await new Promise((resolve) => setImmediate(resolve));
@@ -261,7 +261,7 @@ test('HTTP upgrades and premature request close fail immediately without retaini
       const result = callProvider(config(), messages).then(() => 'success', (failure) => failure.code);
       const outcome = await Promise.race([result, new Promise((resolve) => setImmediate(() => resolve('still-pending')))]);
       // Clean up the pre-fix pending call without making a failing test wait 60 real seconds.
-      child.mock.timers.tick(60_000);
+      child.mock.timers.tick(300_000);
       await result;
       assert.equal(outcome, 'PROVIDER_UNAVAILABLE');
       if (event === 'upgrade') assert.equal(socket.destroyed, true);
@@ -276,4 +276,28 @@ test('disabled or missing-key configurations and invalid histories do not call a
   await assert.rejects(callProvider(config(), [{ role: 'system', content: 'forged' }]), safeError('INVALID_CHAT_MESSAGES'));
   await assert.rejects(callProvider(config(), [{ role: 'user', content: { secret: true } }]), safeError('INVALID_CHAT_MESSAGES'));
   assert.equal(observed.requests, 0);
+});
+
+ test('large user output budgets reach every provider unchanged',()=>{
+ for(const id of ['openai','anthropic','gemini'])for(const maxOutputTokens of [1,8192,32768,65536,131072,300000]) {
+  const normalized=validateProviderConfig(id,config(id,{maxOutputTokens}));
+  assert.equal(normalized.maxOutputTokens,maxOutputTokens);
+  const body=buildProviderRequest({...normalized,apiKey:'fixture'},messages).body;
+  assert.equal(body.max_output_tokens??body.max_tokens??body.generationConfig?.maxOutputTokens,maxOutputTokens);
+ }
+ assert.equal(validateProviderConfig('openai',{...config(),maxOutputTokens:undefined}).maxOutputTokens,8192);
+});
+test('generation respects an explicitly configured total deadline',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const observed=upstream(t,{hang:true});
+ const pending=callProvider(config(),messages,{timeoutMs:120000});await new Promise(r=>setImmediate(r));
+ let settled=false;pending.catch(()=>{settled=true;});t.mock.timers.tick(60001);await Promise.resolve();assert.equal(settled,false);assert.equal(observed.destroyed,false);
+ t.mock.timers.tick(59999);await assert.rejects(pending,safeError('PROVIDER_TIMEOUT'));assert.equal(observed.destroyed,true);
+});
+test('long generation JSON above the old 2 MiB cap is accepted',async t=>{
+ const text='文'.repeat(800000);upstream(t,{body:{output:[{type:'message',content:[{type:'output_text',text}]}]}});
+ assert.equal((await callProvider(config(),messages)).text,text);
+});
+test('upstream parameter rejection is actionable without reflecting provider messages',async t=>{
+ upstream(t,{statusCode:400,body:{error:'upstream-sensitive test-secret-key'}});
+ await assert.rejects(callProvider(config(),messages),safeError('PROVIDER_REJECTED'));
 });

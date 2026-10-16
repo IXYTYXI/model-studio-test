@@ -38,3 +38,7 @@ awesome.yaml 与 .env.example 启用 ALLOW_CUSTOM_API_HOSTS=true，允许第三�
 部署与验证
 Docker、HTTPS、数据备份、密钥恢复及 Awesome Deploy 的接入步骤见 DEPLOYMENT.txt。平台清单为根目录 awesome.yaml，用户指定前缀 chatstd；平台须启用 public-https-v1，并通过 secretRefs 注入实际使用的业务秘密。
 现有服务已发布于 https://chatstd.awesome.guanghexinzhi.cn，后续更新沿用原 appId 与持久卷。未配置真实供应商 API key，未验证付费模型调用。自动化测试不能替代部署后使用自有 key 的验收。
+
+输出长度
+最大输出 Token 已取消应用统一的 4096 限制，可输入 32768、65536 或服务商支持的更大值。新连接默认 8192；旧设置保留，请按需要手动调整。获取模型后，接口明确返回的输出上限会显示并用于页面校验；未返回则手动填写，以服务商实际能力为准。
+生成默认最多等待 5 分钟，PROVIDER_TIMEOUT_SECONDS 可配置 10–1800 秒。应用保活处理平台的空闲超时，仍由服务商决定其自身等待期限。此版本不逐字展示生成结果。

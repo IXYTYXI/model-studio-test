@@ -17,11 +17,12 @@ export const PROVIDER_DEFAULTS = Object.freeze([
 
 const OFFICIAL_HOSTS = PROVIDER_DEFAULTS.map((provider) => new URL(provider.baseUrl).hostname);
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-const TIMEOUT_MS = 60_000;
+const TIMEOUT_MS = 300_000;
 const ERRORS = Object.freeze({
   INVALID_PROVIDER_CONFIG: [400, '模型配置无效，请检查地址、协议、模型名和输出上限。'],
   INVALID_CHAT_MESSAGES: [400, '对话内容无效或过长。'],
   PROVIDER_NOT_CONFIGURED: [503, '此模型尚未启用或配置完整，请联系管理员。'],
+  PROVIDER_REJECTED: [400, '服务商拒绝了请求参数，请检查模型支持的最大输出 Token、模型名称和接口协议。'],
   PROVIDER_UNAVAILABLE: [502, '模型服务暂时不可用，请稍后重试或联系管理员检查配置。'],
   PROVIDER_INVALID_RESPONSE: [502, '模型未返回完整有效的文本，请调整输出上限或稍后重试。'],
   PROVIDER_TIMEOUT: [504, '模型响应超时，请稍后重试。'],
@@ -72,8 +73,8 @@ export function validateProviderConfig(id, data, allowedHosts) {
   if (typeof enabled !== 'boolean') throw error('INVALID_PROVIDER_CONFIG');
   const model = data.model === undefined ? '' : data.model;
   if (typeof model !== 'string' || model.length > 160 || (model === '' ? enabled : !/^[A-Za-z0-9][A-Za-z0-9._:-]*(?:\/[A-Za-z0-9][A-Za-z0-9._:-]*)*$/.test(model))) throw error('INVALID_PROVIDER_CONFIG');
-  const maxOutputTokens = data.maxOutputTokens === undefined ? 2048 : data.maxOutputTokens;
-  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 128 || maxOutputTokens > 4096) throw error('INVALID_PROVIDER_CONFIG');
+  const maxOutputTokens = data.maxOutputTokens === undefined ? 8192 : data.maxOutputTokens;
+  if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1) throw error('INVALID_PROVIDER_CONFIG');
   let baseUrl = safeBaseUrl(data.baseUrl === undefined ? defaults.baseUrl : data.baseUrl, allowedHosts);
   if (new URL(baseUrl).pathname === '/') baseUrl += protocol === 'gemini' ? '/v1beta' : '/v1';
   return { baseUrl, model, protocol, enabled, maxOutputTokens };
@@ -232,7 +233,7 @@ async function resolveAddress(hostname, signal) {
   return { address: answer.address, family: answer.family };
 }
 
-function sendRequest(request, address, signal) {
+function sendRequest(request, address, signal, maxResponseBytes) {
   return new Promise((resolve, reject) => {
     let req;
     let res;
@@ -276,7 +277,7 @@ function sendRequest(request, address, signal) {
         res.on('data', (chunk) => {
           if (settled) return;
           size += chunk.length;
-          if (size > MAX_RESPONSE_BYTES) { finish(error('PROVIDER_INVALID_RESPONSE')); return; }
+          if (size > maxResponseBytes) { finish(error('PROVIDER_INVALID_RESPONSE')); return; }
           chunks.push(chunk);
         });
         res.on('aborted', () => finish(error('PROVIDER_UNAVAILABLE')));
@@ -299,15 +300,20 @@ function sendRequest(request, address, signal) {
   });
 }
 
-export async function callProvider(config, messages, { allowedHosts, signal } = {}) {
+export async function callProvider(config, messages, { allowedHosts, signal, timeoutMs = TIMEOUT_MS } = {}) {
   const normalized = validateProviderConfig(config?.id, config, allowedHosts);
   if (!normalized.enabled || !normalized.model || typeof config.apiKey !== 'string' || !/^[\x21-\x7e]{1,8192}$/.test(config.apiKey)) throw error('PROVIDER_NOT_CONFIGURED');
   const request = buildProviderRequest({ ...normalized, apiKey: config.apiKey }, messages);
-  return parseProviderResponse(normalized.protocol, await requestProviderJson(request, { signal }));
+  try {
+    return parseProviderResponse(normalized.protocol, await requestProviderJson(request, { signal, timeoutMs, maxResponseBytes: 8 * 1024 * 1024 }));
+  } catch (failure) {
+    if ([400, 422].includes(failure.upstreamStatus)) throw error('PROVIDER_REJECTED');
+    throw failure;
+  }
 }
 
 // Shared guarded transport: DNS is checked and pinned separately on every request.
-export async function requestProviderJson(request, { signal, timeoutMs = TIMEOUT_MS } = {}) {
+export async function requestProviderJson(request, { signal, timeoutMs = TIMEOUT_MS, maxResponseBytes = MAX_RESPONSE_BYTES } = {}) {
   const controller = new AbortController();
   const abort = () => controller.abort(error('PROVIDER_CANCELLED'));
   if (signal?.aborted) abort();
@@ -317,7 +323,7 @@ export async function requestProviderJson(request, { signal, timeoutMs = TIMEOUT
   try {
     if (controller.signal.aborted) throw controller.signal.reason;
     const address = await resolveAddress(new URL(request.url).hostname, controller.signal);
-    return await sendRequest(request, address, controller.signal);
+    return await sendRequest(request, address, controller.signal, maxResponseBytes);
   } catch (failure) {
     if (failure instanceof ProviderError) throw failure;
     throw error('PROVIDER_UNAVAILABLE');

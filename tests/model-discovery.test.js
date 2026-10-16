@@ -68,3 +68,21 @@ test('malformed Gemini records are ignored and results are capped at 1000',async
  upstream(t,[{models:[{name:123},{name:'models/valid'}]}]);assert.equal((await listModels(cfg({id:'gemini',protocol:'gemini'}),options)).models.length,1);
  await t.test('bounded list',async t=>{upstream(t,[{data:Array.from({length:1002},(_,i)=>({id:'model-'+i}))}]);const result=await listModels(cfg(),options);assert.equal(result.models.length,1000);assert.equal(result.truncated,true);});
 });
+
+test('only explicit output limits are normalized, never context-window sizes',async t=>{
+ const cases=[
+  ['openai','openai-chat',{data:[{id:'known',max_output_tokens:131072},{id:'context-only',context_length:1000000},{id:'invalid',max_output_tokens:-1}]}],
+  ['anthropic','anthropic',{data:[{id:'known',max_tokens:64000},{id:'context-only',max_input_tokens:1000000}]}],
+  ['gemini','gemini',{models:[{name:'models/known',outputTokenLimit:65536},{name:'models/context-only',inputTokenLimit:1000000}]}]
+ ];
+ for(const [id,protocol,reply] of cases)await t.test(protocol,async t=>{
+  upstream(t,[reply]);const {models}=await listModels(cfg({id,protocol}),options);
+  assert.ok(models[0].maxOutputTokens>4096);assert.equal(models[1].maxOutputTokens,undefined);
+  if(models[2])assert.equal(models[2].maxOutputTokens,undefined);
+ });
+});
+
+test('model discovery retains its 2 MiB transport limit independently of generation',async t=>{
+ upstream(t,[{data:[{id:'model',display_name:'x'.repeat(2*1024*1024)}]}]);
+ await assert.rejects(listModels(cfg(),options),e=>e.code==='MODEL_LIST_INVALID');
+});

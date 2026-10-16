@@ -46,7 +46,8 @@ export async function listModels(config,{allowedHosts,signal}={}) {
         if(models.length>=1000){truncated=true;break;}
         seen.add(id);
         const label=nativeGemini?row.displayName:row.display_name;
-        models.push({id,name:typeof label==='string'?label.slice(0,200):id});
+        const limit=nativeGemini?row.outputTokenLimit:nativeClaude?row.max_tokens:row.max_output_tokens;
+        models.push({id,name:typeof label==='string'?label.slice(0,200):id,...(Number.isSafeInteger(limit)&&limit>0?{maxOutputTokens:limit}:{})});
       }
       const next=nativeGemini?response.nextPageToken:nativeClaude&&response.has_more?response.last_id:'';
       if(!next||truncated)break;

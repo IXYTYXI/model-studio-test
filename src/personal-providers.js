@@ -9,7 +9,7 @@ export function createPersonalProviders({db,config,sharedView}) {
   const row=(user,id)=>db.prepare('SELECT * FROM personal_providers WHERE user_id=? AND provider_id=?').get(user.id,id);
   function initial(user,id) {
     const defaults=PROVIDER_DEFAULTS.find(p=>p.id===id);
-    return {provider_id:id,base_url:defaults.baseUrl,model:'',protocol:defaults.protocol,enabled:0,secret:'',max_output:2048,source:canUseSharedKeys(user)?'shared':'personal'};
+    return {provider_id:id,base_url:defaults.baseUrl,model:'',protocol:defaults.protocol,enabled:0,secret:'',max_output:8192,source:canUseSharedKeys(user)?'shared':'personal'};
   }
   function view(user,id) {
     const own=row(user,id)||initial(user,id);

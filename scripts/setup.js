@@ -100,6 +100,7 @@ async function main() {
     'DEFAULT_DAILY_LIMIT=50',
     'GLOBAL_DAILY_LIMIT=500',
     'ALLOW_CUSTOM_API_HOSTS=true',
+    'PROVIDER_TIMEOUT_SECONDS=300',
     'ALLOWED_API_HOSTS=',
     ''
   ].join('\n');

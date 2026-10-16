@@ -64,3 +64,17 @@ test('upgrading the old schema preserves members and history without restoring r
   assert.equal(db.prepare('SELECT allow_shared_keys FROM users WHERE id=?').get('legacy-member').allow_shared_keys,0);
   assert.equal(db.prepare('SELECT password FROM users WHERE id=?').get('legacy-member').password,'legacy-hash');db.close();
 });
+
+test('generation timeout defaults to five minutes and is operator-configurable',()=>{
+ const env={MASTER_KEY:randomBytes(32).toString('hex')};
+ assert.equal(readConfig(env).providerTimeoutMs,300000);
+ assert.equal(readConfig({...env,PROVIDER_TIMEOUT_SECONDS:'900'}).providerTimeoutMs,900000);
+ for(const value of ['0','9','1801','abc','20.5'])assert.throws(()=>readConfig({...env,PROVIDER_TIMEOUT_SECONDS:value}));
+});
+test('new provider budgets default to 8192 and saved budgets survive reopening',async t=>{
+ const dataDir=await mkdtemp(join(tmpdir(),'studio-output-default-'));t.after(()=>rm(dataDir,{recursive:true,force:true}));
+ const cfg={dataDir,masterKey:randomBytes(32),bootstrapUsername:'admin',bootstrapPassword:'fixture-output-password',defaultDailyLimit:50};
+ let db=await openStore(cfg,PROVIDER_DEFAULTS);assert.equal(db.prepare('SELECT max_output FROM providers LIMIT 1').get().max_output,8192);
+ db.prepare('UPDATE providers SET max_output=2048 WHERE id=?').run('openai');db.close();db=await openStore(cfg,PROVIDER_DEFAULTS);
+ assert.equal(db.prepare('SELECT max_output FROM providers WHERE id=?').get('openai').max_output,2048);db.close();
+});

@@ -8,6 +8,7 @@ import {AppError,requireValue} from './errors.js';
 import {hashPassword,verifyPassword,randomToken,tokenHash,equalToken,encryptSecret,decryptSecret,RateLimiter} from './security.js';
 import {json,readJson,headers,cookie,sessionToken} from './http.js';
 import {PROVIDER_DEFAULTS,validateProviderConfig,callProvider} from './providers.js';
+import {startJsonHeartbeat,hasJsonHeartbeat} from './json-heartbeat.js';
 import {createModelDiscovery} from './model-discovery-service.js';
 import {createGoogleLogin} from './google-login.js';
 import {createPersonalProviders,canUseSharedKeys} from './personal-providers.js';
@@ -20,7 +21,7 @@ const messageView=m=>({id:m.id,role:m.role,content:m.content,createdAt:m.created
 const username=value=>{requireValue(typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_.@-]{1,63}$/.test(value),'用户名须为 2–64 位字母、数字或 . _ @ -');return value.toLowerCase();};
 const dailyLimit=value=>{requireValue(Number.isInteger(value)&&value>=1&&value<=10000,'每日调用上限须为 1–10000 的整数');return value;};
 
-export async function createApp(config,{providerCaller=callProvider,modelLister,googleClient,googleNow}={}) {
+export async function createApp(config,{providerCaller=callProvider,modelLister,googleClient,googleNow,chatHeartbeatMs=15000}={}) {
   const db=await openStore(config,PROVIDER_DEFAULTS),secure=config.publicOrigin.startsWith('https:');
   const userView=u=>({id:u.id,username:u.username,role:u.role,enabled:!!u.enabled,dailyLimit:u.daily_limit,allowSharedKeys:canUseSharedKeys(u),email:db.prepare('SELECT email FROM google_accounts WHERE user_id=?').get(u.id)?.email||null,passwordEnabled:u.password.startsWith('scrypt:')});
   const environmentKey=id=>config.providerKeys?.[id]||'';
@@ -185,6 +186,7 @@ export async function createApp(config,{providerCaller=callProvider,modelLister,
           db.prepare('INSERT INTO usage(user_id,day,used) VALUES(?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET used=used+1').run(u.id,day());
         });
         busyUsers.add(u.id);const controller=new AbortController();controllers.add(controller);
+        const stopHeartbeat=startJsonHeartbeat(res,{intervalMs:chatHeartbeatMs});
         const cancel=()=>{if(!res.writableEnded)controller.abort();};res.on('close',cancel);
         try {
           const history=db.prepare('SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 40').all(c.id).reverse();
@@ -194,8 +196,12 @@ export async function createApp(config,{providerCaller=callProvider,modelLister,
           while(context.length&&context[0].role!=='user')context.shift();
           context.push({role:'user',content:b.message.trim()});
           let answer;
-          try {answer=await providerCaller(personal.effective(u,c.provider,true),context,{allowedHosts:config.allowedHosts,signal:controller.signal});}
-          catch {throw new AppError(502,'PROVIDER_FAILED','模型调用失败，请检查 API 地址、密钥、模型名称、额度和网络连接后重试');}
+          try {answer=await providerCaller(personal.effective(u,c.provider,true),context,{allowedHosts:config.allowedHosts,signal:controller.signal,timeoutMs:config.providerTimeoutMs??300000});}
+          catch(error) {
+            if(error?.code==='PROVIDER_TIMEOUT')throw new AppError(504,'PROVIDER_TIMEOUT','等待模型回复超时，请降低输出长度或联系管理员调整等待时间。');
+            if(error?.code==='PROVIDER_REJECTED')throw new AppError(400,'PROVIDER_REJECTED','服务商拒绝了请求参数，请检查模型支持的最大输出 Token、模型名称和接口协议。');
+            throw new AppError(502,'PROVIDER_FAILED','模型调用失败，请检查 API 地址、密钥、模型名称、额度和网络连接后重试');
+          }
           if(controller.signal.aborted)return;
           refreshAuth();
           if(!answer||typeof answer.text!=='string'||!answer.text.trim()||answer.text.length>1000000)throw new AppError(502,'INVALID_PROVIDER_RESPONSE','模型没有返回有效文本');
@@ -203,7 +209,7 @@ export async function createApp(config,{providerCaller=callProvider,modelLister,
           transaction(()=>{const insert=db.prepare('INSERT INTO messages(conversation_id,role,content,created_at) VALUES(?,?,?,?)');insert.run(c.id,'user',b.message.trim(),now);insert.run(c.id,'assistant',answer.text,now);
             db.prepare('UPDATE conversations SET title=?,updated_at=? WHERE id=?').run(c.title==='新对话'?b.message.trim().slice(0,48):c.title,now,c.id);});
           return json(res,200,{...thread(owned(c.id,u)),usage:usage(u)});
-        } finally {res.off('close',cancel);busyUsers.delete(u.id);controllers.delete(controller);}
+        } finally {stopHeartbeat();res.off('close',cancel);busyUsers.delete(u.id);controllers.delete(controller);}
       }
       throw new AppError(404,'NOT_FOUND','接口不存在');
     }
@@ -219,7 +225,7 @@ export async function createApp(config,{providerCaller=callProvider,modelLister,
     if(res.destroyed||res.writableEnded)return;
     const known=error instanceof AppError;
     const providerValidation=!known&&Number.isInteger(error.status)&&error.status===400&&typeof error.code==='string'&&error.code.startsWith('INVALID_');
-    if(res.headersSent){res.destroy();return;}
+    if(res.headersSent&&!hasJsonHeartbeat(res)){res.destroy();return;}
     json(res,known?error.status:providerValidation?400:500,{error:{code:known?error.code:providerValidation?'INVALID_PROVIDER_CONFIG':'INTERNAL_ERROR',message:known?error.message:providerValidation?'模型配置无效，请检查 API 地址、模型及协议':'服务暂时不可用，请稍后重试'}});
   });});
   server.requestTimeout=15000;server.headersTimeout=10000;server.keepAliveTimeout=5000;server.maxHeadersCount=64;

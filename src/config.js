@@ -33,6 +33,7 @@ export function readConfig(env=process.env) {
   }
   return {masterKey:Buffer.from(raw,'hex'),publicOrigin:publicOrigin.origin,allowedHosts,providerKeys,google,
     dataDir:resolve(env.DATA_DIR||'data'),bootstrapUsername,bootstrapPassword:secret(env,'BOOTSTRAP_PASSWORD'),
+    providerTimeoutMs:integer(env.PROVIDER_TIMEOUT_SECONDS,300,10,1800)*1000,
     port:integer(env.PORT,8080,1,65535),host:env.HOST||'0.0.0.0',
     defaultDailyLimit:integer(env.DEFAULT_DAILY_LIMIT,50,1,10000),globalDailyLimit:integer(env.GLOBAL_DAILY_LIMIT,500,1,100000)};
 }

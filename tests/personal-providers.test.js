@@ -124,3 +124,13 @@ test('one discovery per account runs at a time and unexpected errors never leak 
  finish({models:[],truncated:false});assert.equal((await first).status,200);
  f.setLister(()=>{throw new Error('fixture-a private upstream failure');});const failure=await f.request(path,{method:'POST',auth:f.a,body});assert.equal(failure.status,502);assert.ok(!JSON.stringify(failure).includes('fixture-a'));
 });
+
+test('personal and admin settings persist large output budgets and forward them to chat',async t=>{
+ const f=await fixture(t);
+ assert.equal((await f.request('/api/account/providers',{auth:f.a})).json.providers[0].maxOutputTokens,8192);
+ assert.equal((await f.request('/api/account/providers/openai',{method:'PUT',auth:f.a,body:settings({maxOutputTokens:131072,apiKey:'fixture-large'})})).status,200);
+ assert.equal((await f.request('/api/account/providers',{auth:f.a})).json.providers[0].maxOutputTokens,131072);
+ assert.equal((await f.chat()).status,200);assert.equal(f.calls[0].maxOutputTokens,131072);
+ assert.equal((await f.request('/api/admin/providers/openai',{method:'PUT',body:settings({maxOutputTokens:65536})})).status,200);
+ assert.equal((await f.request('/api/admin/providers')).json.providers[0].maxOutputTokens,65536);
+});

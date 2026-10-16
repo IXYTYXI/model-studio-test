@@ -66,3 +66,19 @@ test('API cancellation is forwarded without reporting a failed login',async()=>{
  const api=createApi({fetcher:async(_url,options)=>{seen=options.signal;throw new DOMException('Aborted','AbortError');}});
  c.abort();await assert.rejects(api('/api/account/providers/openai/models',{method:'POST',body:{},signal:c.signal}),e=>e.name==='AbortError');assert.equal(seen,c.signal);
 });
+
+test('heartbeat responses preserve successful JSON and surface streamed errors',async()=>{
+ let expired=0;let value={ok:true};const api=createApi({onUnauthorized:()=>expired++,fetcher:async()=>new Response(' \n \n'+JSON.stringify(value),{status:200})});
+ assert.deepEqual(await api('/api/chat'),{ok:true});
+ value={error:{status:504,code:'PROVIDER_TIMEOUT',message:'等待模型超时'}};
+ await assert.rejects(api('/api/chat'),e=>e.status===504&&e.code==='PROVIDER_TIMEOUT');
+ value={error:{status:401,code:'AUTH_REQUIRED',message:'请重新登录'}};await assert.rejects(api('/api/chat'));assert.equal(expired,1);
+});
+
+test('output metadata applies only to the exact selected model and never guesses missing limits',()=>{
+ assert.equal(typeof ui.modelOutputLimit,'function');
+ const models=[{id:'large',maxOutputTokens:131072},{id:'unknown',context_length:1000000},{id:'bad',maxOutputTokens:0}];
+ assert.equal(ui.modelOutputLimit(models,'large'),131072);
+ for(const id of ['unknown','bad','manual','Large'])assert.equal(ui.modelOutputLimit(models,id),null);
+ assert.equal(ui.modelOutputLimit([], 'large'),null);
+});

@@ -1,5 +1,10 @@
+import {hasJsonHeartbeat} from './json-heartbeat.js';
 import {AppError} from './errors.js';
-export function json(res,status,value) {res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
+export function json(res,status,value) {
+  if(hasJsonHeartbeat(res)) {if(value.error)value={...value,error:{...value.error,status}};}
+  else res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});
+  res.end(JSON.stringify(value));
+}
 export async function readJson(req) {
   if(!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||''))throw new AppError(415,'JSON_REQUIRED','请求必须使用 JSON');
   const limit=96*1024;

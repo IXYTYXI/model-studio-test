@@ -13,7 +13,7 @@ async function fixture(t,options={}) {
   const config={dataDir:dir,masterKey:randomBytes(32),bootstrapUsername:'admin',bootstrapPassword:password,
     publicOrigin:origin,defaultDailyLimit:50,globalDailyLimit:1000,allowedHosts:new Set(['api.openai.com','api.anthropic.com','generativelanguage.googleapis.com']),...options.config};
   const calls=[];
-  const app=await createApp(config,{providerCaller:options.providerCaller|| (async (provider,messages)=>{calls.push({provider,messages});return {text:'A real adapter would return this fixture reply',usage:{inputTokens:10,outputTokens:8}};})});
+  const app=await createApp(config,{chatHeartbeatMs:options.chatHeartbeatMs,providerCaller:options.providerCaller|| (async (provider,messages)=>{calls.push({provider,messages});return {text:'A real adapter would return this fixture reply',usage:{inputTokens:10,outputTokens:8}};})});
   await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
   const base=`http://127.0.0.1:${app.server.address().port}`;
   t.after(async()=>{await app.close();await rm(dir,{recursive:true,force:true});});
@@ -147,4 +147,38 @@ test('a password mutation with a delayed body cannot revive a revoked session',a
   pending.end(JSON.stringify({currentPassword:password,newPassword:'stale-request-password-2026'}).slice(1));
   assert.equal(await result,401);
   await f.login('admin','recovery-password-long-2026');
+});
+
+async function prepareLongChat(f){
+ const session=await f.login();
+ const r=await f.request('/api/admin/providers/openai',{method:'PUT',session,body:{baseUrl:'https://api.openai.com/v1',model:'test-model',protocol:'openai-responses',apiKey:'fixture-long',enabled:true,maxOutputTokens:65536}});
+ assert.equal(r.status,200);
+ const conversation=(await f.request('/api/conversations',{method:'POST',session,body:{provider:'openai'}})).json.conversation;
+ return {session,body:{conversationId:conversation.id,message:'Long reply'}};
+}
+test('long chat survives an idle-timeout proxy, forwards budget/deadline and stores one reply',async t=>{
+ let observed;const f=await fixture(t,{chatHeartbeatMs:50,config:{providerTimeoutMs:900000},providerCaller:async(p,m,o)=>{observed={p,o};await new Promise(r=>setTimeout(r,1200));return {text:'Long completed reply'};}});
+ const {session,body}=await prepareLongChat(f);
+ const proxy=http.createServer((req,res)=>{
+  const upstream=http.request(f.base+req.url,{method:req.method,headers:req.headers},reply=>{res.writeHead(reply.statusCode,reply.headers);reply.pipe(res);});
+  upstream.setTimeout(500,()=>upstream.destroy(new Error('proxy idle timeout')));
+  upstream.on('error',()=>res.destroy());req.pipe(upstream);
+ });
+ await new Promise(r=>proxy.listen(0,'127.0.0.1',r));t.after(()=>new Promise(r=>{proxy.closeAllConnections();proxy.close(r);}));
+ const result=await fetch(`http://127.0.0.1:${proxy.address().port}/api/chat`,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json',Cookie:session.cookie,'X-CSRF-Token':session.csrfToken},body:JSON.stringify(body)});
+ const raw=await result.text();assert.match(raw,/^ \n/);assert.equal(result.headers.get('x-accel-buffering'),'no');
+ assert.equal(JSON.parse(raw).messages.at(-1).content,'Long completed reply');assert.equal(observed.p.maxOutputTokens,65536);assert.equal(observed.o.timeoutMs,900000);
+ assert.equal(f.app.db.prepare('SELECT count(*) AS n FROM messages').get().n,2);
+});
+test('timeout after heartbeat is a structured safe error and does not store an answer',async t=>{
+ const f=await fixture(t,{chatHeartbeatMs:10,providerCaller:async()=>{await new Promise(r=>setTimeout(r,80));throw Object.assign(new Error('secret upstream text'),{code:'PROVIDER_TIMEOUT'});}});
+ const {session,body}=await prepareLongChat(f);const r=await f.request('/api/chat',{method:'POST',session,body});
+ assert.equal(r.status,200);assert.equal(r.json.error.status,504);assert.equal(r.json.error.code,'PROVIDER_TIMEOUT');assert.doesNotMatch(JSON.stringify(r.json),/secret upstream/);
+ assert.equal(f.app.db.prepare('SELECT count(*) AS n FROM messages').get().n,0);
+});
+test('session revoked during a heartbeat response never receives or saves the answer',async t=>{
+ let resolve;const f=await fixture(t,{chatHeartbeatMs:10,providerCaller:()=>new Promise(r=>resolve=r)});const {session,body}=await prepareLongChat(f);
+ const response=await fetch(f.base+'/api/chat',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json',Cookie:session.cookie,'X-CSRF-Token':session.csrfToken},body:JSON.stringify(body)});
+ f.app.db.exec('DELETE FROM sessions');resolve({text:'private late reply'});const data=await response.json();
+ assert.equal(data.error.status,401);assert.doesNotMatch(JSON.stringify(data),/private late reply/);assert.equal(f.app.db.prepare('SELECT count(*) AS n FROM messages').get().n,0);
 });

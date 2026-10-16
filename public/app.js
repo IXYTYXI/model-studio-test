@@ -1,4 +1,4 @@
-import { createApi, splitContent, googleAuthorizationUrl, googleLoginError } from './ui-lib.js';
+import { createApi, splitContent, googleAuthorizationUrl, googleLoginError, modelOutputLimit } from './ui-lib.js';
 import { modelControl, disposeModelControls } from './model-control.js';
 import { selectControl, closeSelect } from './select-control.js';
 
@@ -522,11 +522,29 @@ function renderProviderSettings(providers, personal = false, allowShared = false
     const protocolField = field('接口协议', 'protocol', { value: provider.protocol, options: protocols });
     const protocolInput = protocolField.querySelector('input');
     const modelField = field('模型名称', 'model', { value: provider.model, wide: true });
+    const modelInput = modelField.querySelector('input');
+    const outputField = field('最大输出 Token', 'maxOutputTokens', { value: String(provider.maxOutputTokens), type: 'number', min: 1, required: true, wide: true, hint: '可手动填写，例如 32768、65536。实际可用上限由服务商和模型决定；这是输出预算，不是上下文长度。' });
+    const outputInput = outputField.querySelector('input'), outputHint = outputField.querySelector('.field-hint');
+    let listedModels = [];
+    function updateOutputLimit() {
+      const limit = modelOutputLimit(listedModels, modelInput.value.trim());
+      if (limit === null) outputInput.removeAttribute('max'); else outputInput.max = String(limit);
+      const exceeded = limit !== null && Number(outputInput.value) > limit;
+      outputInput.setCustomValidity(exceeded ? `此模型返回的最大输出为 ${limit.toLocaleString()} Token，请调整数值。` : '');
+      outputHint.classList.toggle('error', exceeded);
+      outputHint.textContent = limit === null
+        ? '可手动填写，例如 32768、65536。实际可用上限由服务商和模型决定；这是输出预算，不是上下文长度。'
+        : `服务商返回的最大输出：${limit.toLocaleString()} Token。${exceeded ? '当前填写值超过上限，请调整后保存。' : '可在此范围内自行设置；最终以接口响应为准。'}`;
+    }
+    modelInput.addEventListener('input', updateOutputLimit);
+    modelInput.addEventListener('change', updateOutputLimit);
+    outputInput.addEventListener('input', updateOutputLimit);
     const picker = modelControl({ input: modelField.querySelector('input'), load: signal => {
       const payload = { baseUrl: baseInput.value.trim(), protocol: protocolInput.value };
       if (keySource !== 'environment' && keyInput.value.trim()) payload.apiKey = keyInput.value.trim();
       return api(`/api/${personal ? 'account' : 'admin'}/providers/${provider.id}/models`, { method: 'POST', body: payload, signal });
-    }, onLoaded: result => { if (result.baseUrl) baseInput.value = result.baseUrl; } });
+    }, onLoaded: result => { if (result.baseUrl) baseInput.value = result.baseUrl; listedModels = result.models; updateOutputLimit(); },
+    onReset: () => { listedModels = []; updateOutputLimit(); } });
     modelField.append(picker.root);
     baseInput.addEventListener('input', picker.reset);
     keyInput.addEventListener('input', picker.reset);
@@ -541,7 +559,7 @@ function renderProviderSettings(providers, personal = false, allowShared = false
         protocolField.querySelector('.select-control').setValue(suggested);
       } catch { /* URL validation is shown on query/save. */ }
     });
-    grid.append(baseField, keyField, protocolField, modelField, field('最大输出 Token', 'maxOutputTokens', { value: String(provider.maxOutputTokens), type: 'number', min: 128, max: 4096, required: true }));
+    grid.append(baseField, keyField, protocolField, modelField, outputField);
     const footer = formFooter(personal ? '保存并使用个人连接' : '保存设置');
     if (personal) {
       remove = button('删除个人密钥', 'danger-button', async () => {
