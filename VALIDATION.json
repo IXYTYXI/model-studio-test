@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "verifiedOn": "2026-10-15",
+  "verifiedOn": "2026-10-16",
   "runtime": "Node.js 24.13.0",
   "automatedTests": {
     "passed": 134,
@@ -9,8 +9,8 @@
   },
   "docker": {
     "offlineBuild": "passed with --network=none",
-    "imageTag": "model-studio:google-personal-20261015",
-    "imageDigest": "sha256:ed54c67feefd93c877425f73df1256790cbbeea6749234a9b19e6a63858a9bce",
+    "imageTag": "model-studio:ui-details-20261016",
+    "imageDigest": "sha256:4472df4bf36546586b011b70a68784a172ecb300a638346a7e86b6e0b8e71fe2",
     "environment": "Docker Desktop Linux arm64",
     "nonRootUid": 65532,
     "readonlyRoot": true,
@@ -26,10 +26,34 @@
     "threeLayoutsAndSettings": "passed",
     "originalLayoutsVerifiedOn": "2026-10-14",
     "environmentKeySettings": "2026-10-15: managed key input disabled; other settings saved successfully",
-    "mobileViewport": "390x844; personal settings and page have no horizontal overflow",
+    "mobileViewport": "390x844 and 320x568; settings have no horizontal overflow; menu remains within viewport",
     "consoleErrors": 0,
     "personalKeySettings": "2026-10-15: ordinary member saved a fixture personal key, input cleared, local mock conversation succeeded",
-    "googleLoginEntry": "visible with fixture configuration; real OAuth not attempted"
+    "googleLoginEntry": "visible with fixture configuration; real OAuth not attempted",
+    "settingsDetails": {
+      "verifiedOn": "2026-10-16",
+      "method": "Interactive browser checks against disposable localhost fixture; no real credentials or provider calls",
+      "viewports": [
+        "1280x720",
+        "918x918",
+        "390x844",
+        "320x568",
+        "640x360"
+      ],
+      "checks": [
+        "Matched settings controls at least 44px high; custom protocol menu replaces native popup",
+        "Mouse and arrow/Enter selection; Escape closes only the menu; Tab advances to API Key",
+        "Protocol selection survives save and reload; single-option read-only protocol submits successfully",
+        "Menu stays inside viewport and opens upward in short landscape viewport",
+        "Header and close button remain visible while only settings body scrolls",
+        "Empty-key delete and already-active shared buttons disabled; unavailable state survives save",
+        "Failed save displays error and restores fields/buttons; retry succeeds and returns focus",
+        "Managed environment Key remains disabled after saving other settings",
+        "Confirmation has cancel focus; cancel returns focus without deleting the fixture Key",
+        "Tabs support arrow keys; members see only personal settings and no shared-key action",
+        "Account modal and logout return cleanly to login; final browser error/warning log empty"
+      ]
+    }
   },
   "notVerified": [
     "Real paid model API calls; no real API keys were supplied",

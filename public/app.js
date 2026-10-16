@@ -1,4 +1,5 @@
 import { createApi, splitContent, googleAuthorizationUrl, googleLoginError } from './ui-lib.js';
+import { selectControl, closeSelect } from './select-control.js';
 
 const $ = (id) => document.getElementById(id);
 const themes = {
@@ -23,7 +24,7 @@ const themes = {
 };
 const routeProvider = () => Object.keys(themes).find(id => themes[id].route === location.pathname) || 'openai';
 const state = { session: null, provider: routeProvider(), activeId: null, conversations: [], messages: [], busy: false, loading: false, generation: 0, selections: {}, settingsTab: 'personal', googleEnabled: false, loginPending: false };
-let toastTimer;
+let toastTimer, settingsRequest = 0;
 const api = createApi({ getToken: () => state.session?.csrfToken || '', onUnauthorized: () => showLogin('登录已过期，请重新登录。') });
 
 function el(tag, className, text) {
@@ -37,6 +38,24 @@ function button(label, className, action) {
   node.type = 'button';
   if (action) node.addEventListener('click', action);
   return node;
+}
+function confirmAction(title, message, confirmLabel) {
+  closeSelect();
+  return new Promise(resolve => {
+    const dialog = el('dialog', 'confirm-dialog');
+    const id = `confirm-${crypto.randomUUID()}`;
+    dialog.setAttribute('aria-labelledby', `${id}-title`);
+    dialog.setAttribute('aria-describedby', `${id}-message`);
+    const heading = el('h2', '', title); heading.id = `${id}-title`;
+    const description = el('p', '', message); description.id = `${id}-message`;
+    const actions = el('div', 'confirm-actions');
+    const cancel = button('取消', 'secondary-button', () => dialog.close());
+    cancel.autofocus = true;
+    actions.append(cancel, button(confirmLabel, 'danger-button confirm-button', () => dialog.close('confirm')));
+    dialog.append(heading, description, actions);
+    dialog.addEventListener('close', () => { const confirmed = dialog.returnValue === 'confirm'; dialog.remove(); resolve(confirmed); }, { once: true });
+    document.body.append(dialog); dialog.showModal();
+  });
 }
 function showError(node, message = '') { node.textContent = message; node.hidden = !message; }
 function accountName(user) { return user.email || user.username; }
@@ -74,6 +93,7 @@ function showLogin(message = '', success = false) {
   $('settings-dialog').close();
   $('settings-content').replaceChildren();
   $('account-dialog').close();
+  document.querySelectorAll('.confirm-dialog[open]').forEach(dialog => dialog.close());
   $('prompt').value = '';
   $('password').value = '';
   $('login-error').classList.toggle('login-success', success);
@@ -208,7 +228,8 @@ async function openConversation(id) {
   } finally { if (generation === state.generation && state.session) { state.loading = false; updateControls(); } }
 }
 async function deleteConversation(conversation) {
-  if (state.busy || !confirm(`删除「${conversation.title || '新对话'}」？此操作无法撤销。`)) return;
+  if (state.busy || !await confirmAction('删除对话', `确定删除「${conversation.title || '新对话'}」？此操作无法撤销。`, '确认删除')) return;
+  if (state.busy || !state.session) return;
   const provider = state.provider;
   await api(`/api/conversations/${encodeURIComponent(conversation.id)}`, { method: 'DELETE' });
   if (state.selections[provider] === conversation.id) state.selections[provider] = null;
@@ -361,18 +382,22 @@ async function sendChat(event) {
 function field(labelText, name, { value = '', type = 'text', placeholder = '', required = false, min, max, options, hint, wide = false, autocomplete = 'off' } = {}) {
   const wrap = el('div', `field${wide ? ' wide' : ''}`);
   const label = el('label', '', labelText);
-  const input = el(options ? 'select' : 'input');
+  const id = `field-${crypto.randomUUID()}`;
+  label.htmlFor = id; label.id = `${id}-label`;
+  if (options) {
+    wrap.append(label, selectControl({ id, name, value, options, labelId: label.id }));
+    return wrap;
+  }
+  const input = el('input');
   input.name = name;
-  input.id = `field-${crypto.randomUUID()}`;
-  label.htmlFor = input.id;
-  if (options) for (const [optionValue, optionLabel] of options) { const option = el('option', '', optionLabel); option.value = optionValue; input.append(option); }
-  else { input.type = type; input.placeholder = placeholder; input.autocomplete = autocomplete; }
+  input.id = id;
+  input.type = type; input.placeholder = placeholder; input.autocomplete = autocomplete;
   input.value = value;
   input.required = required;
   if (min !== undefined) { if (type === 'password') input.minLength = min; else input.min = min; }
   if (max !== undefined) { if (type === 'password') input.maxLength = max; else input.max = max; }
   wrap.append(label, input);
-  if (hint) wrap.append(el('p', 'field-hint', hint));
+  if (hint) { const note = el('p', 'field-hint', hint); note.id = `${id}-hint`; input.setAttribute('aria-describedby', note.id); wrap.append(note); }
   return wrap;
 }
 function toggle(labelText, name, checked, disabled = false) {
@@ -387,13 +412,34 @@ function formStatus(form, message, isError = false) {
   result.textContent = message;
   result.classList.toggle('error', isError);
 }
-async function formRequest(form, action) {
-  const submit = form.querySelector('[type="submit"]');
-  submit.disabled = true;
-  formStatus(form, '正在保存…');
-  try { await action(); formStatus(form, '已保存'); }
+async function formRequest(form, action, { trigger = form.querySelector('[type="submit"]'), pending = '正在保存…', success = '已保存' } = {}) {
+  if (form.getAttribute('aria-busy') === 'true') return;
+  closeSelect();
+  const buttons = [...form.querySelectorAll('button')].map(button => [button, button.disabled]);
+  const fields = [...form.querySelectorAll('input, textarea, select')].map(input => [input, input.disabled]);
+  const label = trigger.textContent;
+  form.setAttribute('aria-busy', 'true');
+  buttons.forEach(([button]) => { button.disabled = true; });
+  trigger.textContent = pending;
+  formStatus(form, pending);
+  try {
+    // Handlers capture FormData synchronously before their first request.
+    const request = action();
+    fields.forEach(([input]) => { input.disabled = true; });
+    await request; formStatus(form, success);
+  }
   catch (error) { if (state.session) formStatus(form, error.message, true); }
-  finally { submit.disabled = false; }
+  finally {
+    form.removeAttribute('aria-busy'); trigger.textContent = label;
+    fields.forEach(([input, disabled]) => { input.disabled = disabled; });
+    buttons.forEach(([button, disabled]) => { button.disabled = button.dataset.unavailable === undefined ? disabled : button.dataset.unavailable === 'true'; });
+    if (trigger.isConnected && !trigger.disabled && document.activeElement === document.body) trigger.focus({ preventScroll: true });
+  }
+}
+function setUnavailable(button, unavailable) {
+  if (!button) return;
+  button.dataset.unavailable = String(unavailable);
+  button.disabled = unavailable || button.closest('form')?.getAttribute('aria-busy') === 'true';
 }
 function formFooter(label = '保存设置') {
   const footer = el('div', 'form-footer');
@@ -406,6 +452,8 @@ function formFooter(label = '保存设置') {
 }
 async function openSettings(tab = state.settingsTab) {
   if (!state.session) return;
+  closeSelect();
+  const request = ++settingsRequest;
   const admin = state.session.user.role === 'admin';
   if (!admin) tab = 'personal';
   state.settingsTab = tab;
@@ -416,15 +464,21 @@ async function openSettings(tab = state.settingsTab) {
   $('tab-users').hidden = !admin;
   $('tab-providers').classList.toggle('active', tab === 'providers');
   $('tab-users').classList.toggle('active', tab === 'users');
+  for (const name of ['personal', 'providers', 'users']) {
+    $(`tab-${name}`).setAttribute('aria-selected', String(tab === name));
+    $(`tab-${name}`).tabIndex = tab === name ? 0 : -1;
+  }
+  $('settings-content').setAttribute('aria-labelledby', `tab-${tab}`);
+  $('settings-content').scrollTop = 0;
   $('settings-content').replaceChildren(el('p', 'loading-state', '正在加载设置…'));
   try {
     const result = await api(tab === 'personal' ? '/api/account/providers' : `/api/admin/${tab}`);
-    if (!state.session || state.settingsTab !== tab || !$('settings-dialog').open) return;
+    if (!state.session || request !== settingsRequest || !$('settings-dialog').open) return;
     if (tab === 'personal') renderProviderSettings(result.providers, true, result.allowSharedKeys);
     else if (tab === 'providers') renderProviderSettings(result.providers);
     else renderUsers(result.users);
   } catch (error) {
-    if (state.session) $('settings-content').replaceChildren(el('p', 'error-state', error.message), button('重试', 'secondary-button', () => openSettings(tab)));
+    if (state.session && request === settingsRequest && $('settings-dialog').open) $('settings-content').replaceChildren(el('p', 'error-state', error.message), button('重试', 'secondary-button', () => openSettings(tab)));
   }
 }
 function renderProviderSettings(providers, personal = false, allowShared = false) {
@@ -444,37 +498,45 @@ function renderProviderSettings(providers, personal = false, allowShared = false
     const keyHint = el('p', 'field-hint', '通过平台秘密配置更新');
     keyField.append(keyHint);
     let keySource;
-    const sourceNote = el('p', 'field-hint');
+    const sourceNote = el('p', 'connection-source');
+    let remove, shared;
     function updateKeyState(config) {
       keySource = config.keySource || (config.hasKey ? 'stored' : 'none');
       const managed = keySource === 'environment';
       keyInput.value = '';
-      keyInput.disabled = managed;
+      keyInput.disabled = managed || form.getAttribute('aria-busy') === 'true';
       keyInput.placeholder = managed ? '由平台管理' : config.hasKey ? '已保存 · 留空保留' : '输入 API Key';
       keyHint.hidden = !managed;
       title.querySelector('.key-status').textContent = managed ? '由平台管理' : config.hasKey ? '密钥已保存' : '尚无密钥';
+      setUnavailable(remove, !config.hasKey);
+      setUnavailable(shared, config.source === 'shared');
+      if (shared) shared.textContent = config.source === 'shared' ? '已使用平台连接' : '使用平台连接';
       if (personal) sourceNote.textContent = config.source === 'shared'
         ? (allowShared ? '当前使用：平台连接。保存以下设置将切换为个人连接。' : '平台连接未获授权，请填写并保存个人连接。')
         : `当前使用：个人连接${config.enabled ? '' : '（尚未启用）'}`;
     }
-    updateKeyState(provider);
     grid.append(field('API 基础地址', 'baseUrl', { value: provider.baseUrl, type: 'url', placeholder: 'https://api.example.com/v1', wide: true }), field('模型名称', 'model', { value: provider.model, placeholder: '填写服务商提供的模型 ID' }), field('接口协议', 'protocol', { value: provider.protocol, options: protocols }), keyField, field('最大输出 Token', 'maxOutputTokens', { value: String(provider.maxOutputTokens), type: 'number', min: 128, max: 4096, required: true }));
     const footer = formFooter(personal ? '保存并使用个人连接' : '保存设置');
     if (personal) {
-      const remove = button('删除个人密钥', 'danger-button', () => {
-        if (!confirm('删除这个模型的个人 API Key 并停用个人连接？之后需重新填写 Key 才能恢复。')) return;
+      remove = button('删除个人密钥', 'danger-button', async () => {
+        if (!await confirmAction(`删除 ${themes[provider.id].name} 个人密钥`, '删除后将停用此个人连接，需要重新填写 API Key 才能恢复。不会自动切换到平台连接。', '删除并停用')) return;
+        if (!state.session || !form.isConnected) return;
         formRequest(form, async () => {
           await api(`/api/account/providers/${provider.id}`, {method: 'DELETE'});
           state.session = await api('/api/session'); updateHeader(); await openSettings('personal');
           toast('个人密钥已删除，个人连接已停用');
-        });
+        }, { trigger: remove, pending: '正在删除…', success: '已删除' });
       });
       footer.append(remove);
-      if (allowShared) footer.append(button('使用平台连接', 'secondary-button', () => formRequest(form, async () => {
+      if (allowShared) {
+        shared = button('使用平台连接', 'secondary-button', () => formRequest(form, async () => {
         await api(`/api/account/providers/${provider.id}`, {method: 'PUT', body: {source: 'shared'}});
         state.session = await api('/api/session'); updateHeader(); await openSettings('personal'); toast('已切换为平台连接');
-      })));
+        }, { trigger: shared, pending: '正在切换…', success: '已切换' }));
+        footer.append(shared);
+      }
     }
+    updateKeyState(provider);
     form.append(heading);
     if (personal) form.append(sourceNote);
     form.append(grid, footer);
@@ -585,6 +647,17 @@ $('settings-button').addEventListener('click', () => openSettings('providers'));
 $('personal-settings-button').addEventListener('click', () => openSettings('personal'));
 $('top-settings').addEventListener('click', () => openSettings('personal'));
 $('close-settings').addEventListener('click', () => $('settings-dialog').close());
+$('settings-dialog').addEventListener('close', () => { closeSelect(); ++settingsRequest; });
+$('settings-dialog').querySelector('.settings-tabs').addEventListener('keydown', event => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const tabs = [...document.querySelectorAll('.settings-tabs .tab')].filter(tab => !tab.hidden);
+  const current = tabs.indexOf(event.target);
+  if (current < 0) return;
+  event.preventDefault();
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+    : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  tabs[next].focus(); tabs[next].click();
+});
 $('tab-providers').addEventListener('click', () => openSettings('providers'));
 $('tab-personal').addEventListener('click', () => openSettings('personal'));
 $('tab-users').addEventListener('click', () => openSettings('users'));
